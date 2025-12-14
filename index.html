@@ -1,26 +1,582 @@
 <!doctype html>
 <html lang="th">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ICU Stock</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ICU Stock Management</title>
 
+  <!-- Tailwind CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Font Awesome (no kit required) -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 
-  <style>
-    html, body { font-family: Prompt, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    .backdrop { background: rgba(15, 23, 42, 0.55); }
-  </style>
+  <script>
+    // IMPORTANT: ใส่ /exec ของ Web App ที่ Deploy แล้ว
+    window.APP_CONFIG = {
+      API_URL: "https://script.google.com/macros/s/AKfycbyh3n68zROZpJTdklojgwHrWXNWkr_U2zqMBumbOGdi_GcKBLipyS55d674DHh65GSE7A/exec"
+    };
+
+    // Logo จากลิงก์ที่ให้มา
+    window.APP_BRAND = {
+      LOGO_URL: "https://lh5.googleusercontent.com/d/1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO"
+    };
+  </script>
 </head>
 
 <body class="bg-slate-50 text-slate-900">
-  <div id="app"></div>
+  <!-- LOGIN VIEW -->
+  <div id="loginView" class="min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <div class="flex items-center gap-3 mb-6">
+        <img id="brandLogoLogin" alt="Logo" class="w-12 h-12 rounded-xl object-cover border border-slate-200" />
+        <div>
+          <div class="text-lg font-semibold">ICU Stock Management</div>
+          <div class="text-sm text-slate-500">Sign in เพื่อใช้งานระบบ</div>
+        </div>
+      </div>
 
-  <script src="./config.js"></script>
+      <form id="loginForm" class="space-y-4">
+        <div>
+          <label class="text-sm font-medium text-slate-700">Staff ID</label>
+          <input id="loginStaffId" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                 placeholder="เช่น 1001" autocomplete="username" required />
+        </div>
+
+        <div>
+          <label class="text-sm font-medium text-slate-700">Password</label>
+          <input id="loginPassword" type="password" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                 placeholder="••••••••" autocomplete="current-password" required />
+        </div>
+
+        <button type="submit"
+                class="w-full rounded-xl bg-slate-900 text-white py-2.5 font-medium hover:bg-slate-800 active:bg-slate-950">
+          <i class="fa-solid fa-right-to-bracket mr-2"></i>Log in
+        </button>
+      </form>
+
+      <div class="mt-4 text-xs text-slate-500">
+        หากล็อกอินไม่ได้ ให้ตรวจสอบว่า Deploy Web App เป็น “Anyone” และมีข้อมูลในชีต Staff
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP VIEW -->
+  <div id="mainView" class="hidden">
+    <!-- Sidebar (Desktop) -->
+    <aside class="hidden md:flex fixed inset-y-0 left-0 w-64 bg-white border-r border-slate-200">
+      <div class="w-full flex flex-col">
+        <div class="p-4 border-b border-slate-200 flex items-center gap-3">
+          <img id="brandLogoSidebar" alt="Logo" class="w-10 h-10 rounded-xl object-cover border border-slate-200" />
+          <div class="min-w-0">
+            <div class="font-semibold truncate">ICU Stock</div>
+            <div id="sidebarUserMeta" class="text-xs text-slate-500 truncate">-</div>
+          </div>
+        </div>
+
+        <nav class="p-2 space-y-1 overflow-auto" id="sidebarNav">
+          <!-- User menus -->
+          <button class="navBtn w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" data-route="daily-supply">
+            <i class="fa-solid fa-clipboard-check w-6"></i> Daily Check (Supply)
+          </button>
+          <button class="navBtn w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" data-route="daily-medicine">
+            <i class="fa-solid fa-pills w-6"></i> Daily Check (Medicine)
+          </button>
+          <button class="navBtn w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" data-route="reorder">
+            <i class="fa-solid fa-cart-shopping w-6"></i> Reorder Items
+          </button>
+          <button class="navBtn w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" data-route="expired">
+            <i class="fa-solid fa-triangle-exclamation w-6"></i> Expired Items
+          </button>
+          <button class="navBtn w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" data-route="report">
+            <i class="fa-solid fa-file-pdf w-6"></i> Report
+          </button>
+
+          <div class="pt-2 mt-2 border-t border-slate-200"></div>
+
+          <!-- Admin menus (role-based) -->
+          <div id="adminMenus" class="space-y-1 hidden">
+            <div class="text-xs uppercase tracking-wide text-slate-500 px-3 py-2">Admin</div>
+
+            <button class="navBtn w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" data-route="inventory">
+              <i class="fa-solid fa-boxes-stacked w-6"></i> Inventory
+            </button>
+            <button class="navBtn w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" data-route="shift-summary">
+              <i class="fa-solid fa-chart-column w-6"></i> Shift Summary
+            </button>
+            <button class="navBtn w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" data-route="user-management">
+              <i class="fa-solid fa-users-gear w-6"></i> User Management
+            </button>
+            <button class="navBtn w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" data-route="settings">
+              <i class="fa-solid fa-gear w-6"></i> Settings
+            </button>
+          </div>
+        </nav>
+
+        <div class="mt-auto p-3 border-t border-slate-200">
+          <button id="btnLogoutSidebar" class="w-full rounded-xl border border-slate-300 px-3 py-2 hover:bg-slate-100">
+            <i class="fa-solid fa-arrow-right-from-bracket mr-2"></i>Logout
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Content -->
+    <div class="md:ml-64 min-h-screen pb-20 md:pb-0">
+      <header class="sticky top-0 z-30 bg-white/90 backdrop-blur border-b border-slate-200">
+        <div class="px-4 py-3 flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <div id="pageTitle" class="font-semibold truncate">-</div>
+            <div id="pageSubtitle" class="text-xs text-slate-500 truncate">-</div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="btnRefresh" class="rounded-xl border border-slate-300 px-3 py-2 hover:bg-slate-100">
+              <i class="fa-solid fa-rotate"></i>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main class="p-4 space-y-6">
+        <!-- DAILY SUPPLY -->
+        <section id="page-daily-supply" class="page hidden">
+          <div class="bg-white rounded-2xl border border-slate-200 p-4">
+            <div class="flex flex-col md:flex-row md:items-end gap-3">
+              <div class="flex-1">
+                <label class="text-sm font-medium text-slate-700">ค้นหา</label>
+                <input id="dailySupplySearch" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"
+                       placeholder="พิมพ์ชื่อรายการหรือ Lot..." />
+              </div>
+              <div class="w-full md:w-56">
+                <label class="text-sm font-medium text-slate-700">ตู้</label>
+                <select id="dailySupplyCabinet" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"></select>
+              </div>
+              <div class="flex gap-2">
+                <button id="btnDailySupplySubmit" class="rounded-xl bg-slate-900 text-white px-4 py-2.5 hover:bg-slate-800">
+                  <i class="fa-solid fa-floppy-disk mr-2"></i>บันทึก
+                </button>
+              </div>
+            </div>
+
+            <div id="dailySupplyList" class="mt-4 grid grid-cols-1 gap-3"></div>
+
+            <div class="mt-4 flex items-center justify-between">
+              <button id="dailySupplyPrev" class="rounded-xl border border-slate-300 px-3 py-2 hover:bg-slate-100">ก่อนหน้า</button>
+              <div id="dailySupplyPageInfo" class="text-sm text-slate-600">-</div>
+              <button id="dailySupplyNext" class="rounded-xl border border-slate-300 px-3 py-2 hover:bg-slate-100">ถัดไป</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- DAILY MEDICINE -->
+        <section id="page-daily-medicine" class="page hidden">
+          <div class="bg-white rounded-2xl border border-slate-200 p-4">
+            <div class="flex flex-col md:flex-row md:items-end gap-3">
+              <div class="flex-1">
+                <label class="text-sm font-medium text-slate-700">ค้นหา</label>
+                <input id="dailyMedicineSearch" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"
+                       placeholder="พิมพ์ชื่อรายการหรือ Lot..." />
+              </div>
+              <div class="w-full md:w-56">
+                <label class="text-sm font-medium text-slate-700">ตู้</label>
+                <select id="dailyMedicineCabinet" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"></select>
+              </div>
+              <div class="flex gap-2">
+                <button id="btnDailyMedicineSubmit" class="rounded-xl bg-slate-900 text-white px-4 py-2.5 hover:bg-slate-800">
+                  <i class="fa-solid fa-floppy-disk mr-2"></i>บันทึก
+                </button>
+              </div>
+            </div>
+
+            <div id="dailyMedicineList" class="mt-4 grid grid-cols-1 gap-3"></div>
+
+            <div class="mt-4 flex items-center justify-between">
+              <button id="dailyMedicinePrev" class="rounded-xl border border-slate-300 px-3 py-2 hover:bg-slate-100">ก่อนหน้า</button>
+              <div id="dailyMedicinePageInfo" class="text-sm text-slate-600">-</div>
+              <button id="dailyMedicineNext" class="rounded-xl border border-slate-300 px-3 py-2 hover:bg-slate-100">ถัดไป</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- REORDER -->
+        <section id="page-reorder" class="page hidden">
+          <div class="bg-white rounded-2xl border border-slate-200 p-4">
+            <div class="flex items-center justify-between">
+              <div class="font-semibold">รายการที่ต้องสั่งซื้อ</div>
+            </div>
+            <div class="mt-3 overflow-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-100">
+                  <tr>
+                    <th class="text-left p-2 rounded-l-xl">รายการ</th>
+                    <th class="text-left p-2">จำนวนรวม</th>
+                    <th class="text-left p-2">Min</th>
+                    <th class="text-left p-2 rounded-r-xl">ต้องสั่ง</th>
+                  </tr>
+                </thead>
+                <tbody id="reorderTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- EXPIRED -->
+        <section id="page-expired" class="page hidden">
+          <div class="bg-white rounded-2xl border border-slate-200 p-4">
+            <div class="font-semibold">รายการหมดอายุ / ใกล้หมดอายุ</div>
+            <div class="mt-3 overflow-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-100">
+                  <tr>
+                    <th class="text-left p-2 rounded-l-xl">รายการ</th>
+                    <th class="text-left p-2">Lot</th>
+                    <th class="text-left p-2">จำนวน</th>
+                    <th class="text-left p-2">วันหมดอายุ</th>
+                    <th class="text-left p-2 rounded-r-xl">สถานะ</th>
+                  </tr>
+                </thead>
+                <tbody id="expiredTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- REPORT -->
+        <section id="page-report" class="page hidden">
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div class="bg-white rounded-2xl border border-slate-200 p-4">
+              <div class="font-semibold">รายงาน (PDF + ส่งอีเมล)</div>
+              <div class="text-sm text-slate-500 mt-1">สร้างรายงานสรุปและส่งอีเมล พร้อมโลโก้</div>
+              <button id="btnSendReport" class="mt-4 rounded-xl bg-slate-900 text-white px-4 py-2.5 hover:bg-slate-800">
+                <i class="fa-solid fa-paper-plane mr-2"></i>ส่งรายงาน
+              </button>
+            </div>
+
+            <div class="bg-white rounded-2xl border border-slate-200 p-4">
+              <div class="font-semibold">อีเมลผู้รับรายงาน</div>
+              <div class="text-sm text-slate-500 mt-1">ใส่ 1 อีเมลต่อ 1 บรรทัด</div>
+              <textarea id="emailRecipientsInput" rows="6"
+                        class="mt-3 w-full rounded-xl border border-slate-300 px-3 py-2"></textarea>
+              <button id="btnSaveRecipients" class="mt-3 rounded-xl border border-slate-300 px-4 py-2 hover:bg-slate-100">
+                <i class="fa-solid fa-floppy-disk mr-2"></i>บันทึกอีเมลผู้รับ
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- INVENTORY (ADMIN) -->
+        <section id="page-inventory" class="page hidden">
+          <div class="bg-white rounded-2xl border border-slate-200 p-4">
+            <div class="flex items-center justify-between">
+              <div class="font-semibold">Inventory (Admin)</div>
+              <button id="btnToggleInvForm" class="rounded-xl border border-slate-300 px-3 py-2 hover:bg-slate-100">
+                <i class="fa-solid fa-plus mr-2"></i>เพิ่ม/แก้ไขรายการ
+              </button>
+            </div>
+
+            <form id="inventoryForm" class="mt-4 hidden">
+              <input id="invId" type="hidden" />
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label class="text-sm font-medium">รายการ</label>
+                  <input id="invName" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" required />
+                </div>
+                <div>
+                  <label class="text-sm font-medium">Lot No</label>
+                  <input id="invLot" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" required />
+                </div>
+                <div>
+                  <label class="text-sm font-medium">จำนวน</label>
+                  <input id="invQty" type="number" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" required />
+                </div>
+                <div>
+                  <label class="text-sm font-medium">Minimum Stock</label>
+                  <input id="invMin" type="number" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value="5" />
+                </div>
+                <div>
+                  <label class="text-sm font-medium">วันหมดอายุ</label>
+                  <input id="invExpiry" type="date" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" />
+                </div>
+                <div>
+                  <label class="text-sm font-medium">ตู้</label>
+                  <input id="invCabinet" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" />
+                </div>
+                <div class="md:col-span-2">
+                  <label class="text-sm font-medium">หมายเหตุ</label>
+                  <input id="invNote" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" />
+                </div>
+                <div>
+                  <label class="text-sm font-medium">Category</label>
+                  <select id="invCategory" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2">
+                    <option value="Medical Supply">Medical Supply</option>
+                    <option value="Medicine">Medicine</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-sm font-medium">รูปสินค้า (Upload/ถ่ายรูป)</label>
+                  <input id="invImage" type="file" accept="image/*" capture="environment"
+                         class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 bg-white" />
+                  <div class="text-xs text-slate-500 mt-1">ระบบจะบีบอัดรูปก่อนอัปโหลดเพื่อความเร็ว</div>
+                </div>
+              </div>
+
+              <div class="mt-4 flex flex-wrap gap-2">
+                <button class="rounded-xl bg-slate-900 text-white px-4 py-2.5 hover:bg-slate-800" type="submit">
+                  <i class="fa-solid fa-floppy-disk mr-2"></i>บันทึก
+                </button>
+                <button id="btnInvCancel" class="rounded-xl border border-slate-300 px-4 py-2.5 hover:bg-slate-100" type="button">
+                  ยกเลิก
+                </button>
+              </div>
+            </form>
+
+            <div class="mt-4 flex flex-col md:flex-row gap-3 md:items-end">
+              <div class="flex-1">
+                <label class="text-sm font-medium">ค้นหา</label>
+                <input id="invSearch" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="ค้นหา..." />
+              </div>
+              <div class="w-full md:w-56">
+                <label class="text-sm font-medium">ตู้</label>
+                <select id="invCabinetFilter" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"></select>
+              </div>
+            </div>
+
+            <div class="mt-4 overflow-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-100">
+                  <tr>
+                    <th class="text-left p-2 rounded-l-xl">รายการ</th>
+                    <th class="text-left p-2">Lot</th>
+                    <th class="text-left p-2">จำนวน</th>
+                    <th class="text-left p-2">Min</th>
+                    <th class="text-left p-2">หมดอายุ</th>
+                    <th class="text-left p-2">ตู้</th>
+                    <th class="text-left p-2">Category</th>
+                    <th class="text-left p-2 rounded-r-xl">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="invTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- SHIFT SUMMARY (ADMIN) -->
+        <section id="page-shift-summary" class="page hidden">
+          <div class="bg-white rounded-2xl border border-slate-200 p-4">
+            <div class="font-semibold">Shift Summary (Admin)</div>
+            <div class="mt-3 overflow-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-100">
+                  <tr>
+                    <th class="text-left p-2 rounded-l-xl">วันที่</th>
+                    <th class="text-left p-2">เวร</th>
+                    <th class="text-left p-2">ผู้ตรวจ</th>
+                    <th class="text-left p-2 rounded-r-xl">หมายเหตุ</th>
+                  </tr>
+                </thead>
+                <tbody id="shiftTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- USER MANAGEMENT (ADMIN) -->
+        <section id="page-user-management" class="page hidden">
+          <div class="bg-white rounded-2xl border border-slate-200 p-4">
+            <div class="font-semibold">User Management (Admin)</div>
+
+            <form id="userForm" class="mt-4">
+              <input id="userEditMode" type="hidden" value="false"/>
+              <input id="userOriginalId" type="hidden" value=""/>
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div>
+                  <label class="text-sm font-medium">StaffID</label>
+                  <input id="userId" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" required />
+                </div>
+                <div>
+                  <label class="text-sm font-medium">Name</label>
+                  <input id="userName" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" required />
+                </div>
+                <div>
+                  <label class="text-sm font-medium">Password</label>
+                  <input id="userPass" type="password" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="เว้นว่าง=ไม่เปลี่ยนรหัส" />
+                </div>
+                <div>
+                  <label class="text-sm font-medium">Role</label>
+                  <select id="userRole" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2">
+                    <option value="Admin">Admin</option>
+                    <option value="RN">RN</option>
+                    <option value="PN">PN</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mt-3 flex gap-2">
+                <button class="rounded-xl bg-slate-900 text-white px-4 py-2.5 hover:bg-slate-800" type="submit">
+                  <i class="fa-solid fa-floppy-disk mr-2"></i>บันทึกผู้ใช้
+                </button>
+                <button id="btnUserCancel" class="rounded-xl border border-slate-300 px-4 py-2.5 hover:bg-slate-100" type="button">
+                  ยกเลิก
+                </button>
+              </div>
+            </form>
+
+            <div class="mt-4 overflow-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-100">
+                  <tr>
+                    <th class="text-left p-2 rounded-l-xl">StaffID</th>
+                    <th class="text-left p-2">Name</th>
+                    <th class="text-left p-2">Role</th>
+                    <th class="text-left p-2 rounded-r-xl">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="userTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- SETTINGS (ADMIN) -->
+        <section id="page-settings" class="page hidden">
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div class="bg-white rounded-2xl border border-slate-200 p-4">
+              <div class="font-semibold">System Status</div>
+              <pre id="systemStatusBox" class="mt-3 text-xs bg-slate-950 text-slate-50 rounded-xl p-3 overflow-auto">-</pre>
+              <button id="btnLoadStatus" class="mt-3 rounded-xl border border-slate-300 px-4 py-2 hover:bg-slate-100">
+                <i class="fa-solid fa-wave-square mr-2"></i>โหลดสถานะ
+              </button>
+            </div>
+
+            <div class="bg-white rounded-2xl border border-slate-200 p-4">
+              <div class="font-semibold">Backup</div>
+              <div class="text-sm text-slate-500 mt-1">สำรองข้อมูลไปยัง Drive ของเจ้าของสคริปต์</div>
+              <button id="btnBackup" class="mt-4 rounded-xl border border-slate-300 px-4 py-2 hover:bg-slate-100">
+                <i class="fa-solid fa-database mr-2"></i>Backup ตอนนี้
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Bottom Nav (Mobile) -->
+    <nav class="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 z-40">
+      <div id="bottomNav" class="grid grid-cols-4">
+        <button class="bnBtn py-3" data-route="daily-supply">
+          <div class="text-center text-xs"><i class="fa-solid fa-clipboard-check text-base"></i><div>Daily</div></div>
+        </button>
+        <button class="bnBtn py-3" data-route="reorder">
+          <div class="text-center text-xs"><i class="fa-solid fa-cart-shopping text-base"></i><div>Reorder</div></div>
+        </button>
+
+        <!-- Admin center button (role-based) -->
+        <button id="bnAdminBtn" class="bnBtn py-3 hidden">
+          <div class="text-center text-xs">
+            <i class="fa-solid fa-bars text-base"></i>
+            <div>Admin</div>
+          </div>
+        </button>
+
+        <button class="bnBtn py-3" data-route="expired">
+          <div class="text-center text-xs"><i class="fa-solid fa-triangle-exclamation text-base"></i><div>Expired</div></div>
+        </button>
+      </div>
+    </nav>
+
+    <!-- Admin Bottom Sheet (Expandable Bottom Sheet / Action Sheet) -->
+    <div id="adminSheetOverlay" class="hidden fixed inset-0 bg-black/30 z-50"></div>
+    <div id="adminSheet" class="hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl border border-slate-200 shadow-lg">
+      <div class="p-4 flex items-center justify-between">
+        <div class="font-semibold">Admin Panel</div>
+        <button id="btnCloseAdminSheet" class="rounded-xl border border-slate-300 px-3 py-2 hover:bg-slate-100">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="p-4 pt-0 grid grid-cols-3 gap-3">
+        <button class="adminSheetBtn rounded-2xl border border-slate-200 p-3 hover:bg-slate-50" data-route="inventory">
+          <i class="fa-solid fa-boxes-stacked"></i>
+          <div class="text-xs mt-2">Inventory</div>
+        </button>
+        <button class="adminSheetBtn rounded-2xl border border-slate-200 p-3 hover:bg-slate-50" data-route="shift-summary">
+          <i class="fa-solid fa-chart-column"></i>
+          <div class="text-xs mt-2">Shift</div>
+        </button>
+        <button class="adminSheetBtn rounded-2xl border border-slate-200 p-3 hover:bg-slate-50" data-route="user-management">
+          <i class="fa-solid fa-users-gear"></i>
+          <div class="text-xs mt-2">Users</div>
+        </button>
+        <button class="adminSheetBtn rounded-2xl border border-slate-200 p-3 hover:bg-slate-50" data-route="report">
+          <i class="fa-solid fa-file-pdf"></i>
+          <div class="text-xs mt-2">Report</div>
+        </button>
+        <button class="adminSheetBtn rounded-2xl border border-slate-200 p-3 hover:bg-slate-50" data-route="settings">
+          <i class="fa-solid fa-gear"></i>
+          <div class="text-xs mt-2">Settings</div>
+        </button>
+      </div>
+    </div>
+
+    <!-- Item Detail Modal -->
+    <div id="modalOverlay" class="hidden fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4">
+      <div class="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-lg">
+        <div class="p-4 flex items-center justify-between border-b border-slate-200">
+          <div class="font-semibold" id="itemModalTitle">Item Detail</div>
+          <button id="btnCloseModal" class="rounded-xl border border-slate-300 px-3 py-2 hover:bg-slate-100">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <div class="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="md:col-span-1">
+            <img id="itemModalImage" class="w-full h-44 object-cover rounded-2xl border border-slate-200 bg-slate-100" alt="image"/>
+            <div class="mt-3 text-sm text-slate-600">
+              <div><span class="font-medium">รวมคงเหลือ:</span> <span id="itemModalTotalQty">-</span></div>
+              <div><span class="font-medium">ใกล้หมดอายุ:</span> <span id="itemModalNearestExpiry">-</span></div>
+              <div><span class="font-medium">รับเข้าล่าสุด:</span> <span id="itemModalLastReceive">-</span></div>
+              <div><span class="font-medium">เบิกล่าสุด:</span> <span id="itemModalLastUsage">-</span></div>
+            </div>
+          </div>
+
+          <div class="md:col-span-2">
+            <div class="text-sm font-semibold mb-2">Lots</div>
+            <div id="itemModalLots" class="space-y-2"></div>
+
+            <div class="mt-4 flex flex-wrap gap-2">
+              <button id="btnQuickUsage" class="rounded-xl bg-slate-900 text-white px-4 py-2.5 hover:bg-slate-800">
+                <i class="fa-solid fa-minus mr-2"></i>บันทึกการเบิก
+              </button>
+              <button id="btnQuickEdit" class="hidden rounded-xl border border-slate-300 px-4 py-2.5 hover:bg-slate-100">
+                <i class="fa-solid fa-pen mr-2"></i>แก้ไข (Admin)
+              </button>
+            </div>
+
+            <div id="quickUsageBox" class="hidden mt-4 bg-slate-50 rounded-2xl border border-slate-200 p-3">
+              <div class="text-sm font-semibold">บันทึกการเบิก</div>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2">
+                <select id="usageLotSelect" class="rounded-xl border border-slate-300 px-3 py-2"></select>
+                <input id="usageQty" type="number" class="rounded-xl border border-slate-300 px-3 py-2" placeholder="จำนวน" />
+                <button id="btnSubmitUsage" class="rounded-xl bg-slate-900 text-white px-4 py-2.5 hover:bg-slate-800">
+                  บันทึก
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="hidden fixed top-4 right-4 z-[60] bg-slate-900 text-white px-4 py-3 rounded-xl shadow-lg text-sm"></div>
+
+    <!-- Loading -->
+    <div id="loadingOverlay" class="hidden fixed inset-0 bg-black/20 z-[70] flex items-center justify-center p-4">
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-3 flex items-center gap-3">
+        <i class="fa-solid fa-circle-notch fa-spin"></i>
+        <div id="loadingText" class="text-sm">กำลังทำงาน...</div>
+      </div>
+    </div>
+  </div>
+
   <script src="./app.js"></script>
 </body>
 </html>
