@@ -1,1034 +1,943 @@
-/* ICU Stock Management - GitHub Pages UI
- * Uses JSONP to call Apps Script Web App API (avoids typical CORS/preflight issues).
- * Image upload uses POST no-cors, then refresh data.
- */
+/* ICU Stock Management - GitHub Pages Frontend (Tailwind)
+   - Sidebar (Desktop) + Bottom Nav (Mobile)
+   - Admin Action Sheet (Expandable Bottom Sheet)
+   - Role-Based Navigation
+   - Fetch JSON API from Google Apps Script Web App
+*/
 
-const API_URL = (window.APP_CONFIG && window.APP_CONFIG.API_URL) || "";
-const LOGO_URL = (window.APP_BRAND && window.APP_BRAND.LOGO_URL) || "";
+const CFG = window.APP_CONFIG;
+
+const ROLES = { ADMIN: "Admin", RN: "RN", PN: "PN" };
+
+const MENU = [
+  { id: "dashboardTab", label: "หน้าแรก", icon: "fa-house", roles: [ROLES.ADMIN, ROLES.RN, ROLES.PN] },
+  { id: "dailyCheckSupplyTab", label: "ตรวจสต็อกเวชภัณฑ์", icon: "fa-clipboard-check", roles: [ROLES.ADMIN, ROLES.PN] },
+  { id: "dailyCheckMedicineTab", label: "ตรวจสต็อกยา", icon: "fa-clipboard-check", roles: [ROLES.ADMIN, ROLES.RN] },
+  { id: "inventoryTab", label: "คลัง", icon: "fa-boxes-stacked", roles: [ROLES.ADMIN, ROLES.RN, ROLES.PN] },
+  { id: "reorderTab", label: "รายการต้องสั่งซื้อ", icon: "fa-cart-shopping", roles: [ROLES.ADMIN, ROLES.RN, ROLES.PN] },
+  { id: "expiredTab", label: "รายการใกล้หมดอายุ", icon: "fa-triangle-exclamation", roles: [ROLES.ADMIN, ROLES.RN, ROLES.PN] },
+  { id: "reportTab", label: "รายงาน", icon: "fa-file-pdf", roles: [ROLES.ADMIN] },
+  { id: "userManagementTab", label: "จัดการสมาชิก", icon: "fa-users", roles: [ROLES.ADMIN] },
+  { id: "profileTab", label: "โปรไฟล์", icon: "fa-user", roles: [ROLES.ADMIN, ROLES.RN, ROLES.PN], hiddenOnSidebar: true }
+];
+
+const ADMIN_SHEET_MENU = [
+  { id: "reorderTab", label: "Reorder", icon: "fa-cart-shopping" },
+  { id: "expiredTab", label: "Expired", icon: "fa-triangle-exclamation" },
+  { id: "reportTab", label: "Report", icon: "fa-file-pdf" },
+  { id: "userManagementTab", label: "Users", icon: "fa-users" },
+  { id: "inventoryTab", label: "Inventory", icon: "fa-boxes-stacked" }
+];
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const state = {
-  token: null,
-  staff: { id: "", name: "", role: "" },
-  lastUpdatedIso: null,
+  session: null, // {staffId, staffName, role, token}
   data: {
     inventory: [],
     reorder: [],
     expired: [],
-    shiftSummary: [],
     staff: [],
-    recipients: []
+    emailRecipients: [],
+    cabinets: []
   },
-  ui: {
-    route: "daily-supply",
-    dailySupply: { q: "", cabinet: "", page: 1, pageSize: 10 },
-    dailyMedicine: { q: "", cabinet: "", page: 1, pageSize: 10 },
-    inventory: { q: "", cabinet: "" },
-    modal: { currentItemName: null }
-  }
+  currentTab: "dashboardTab",
+  editItemImageUrl: ""
 };
 
-/* ----------------------------- JSONP API ----------------------------- */
-
-function jsonp(action, payload = {}) {
-  return new Promise((resolve, reject) => {
-    if (!API_URL) return reject(new Error("API_URL not set"));
-    const cbName = "__icu_cb_" + Math.random().toString(36).slice(2);
-
-    const params = new URLSearchParams();
-    params.set("action", action);
-    params.set("callback", cbName);
-
-    // attach token if present
-    if (state.token) params.set("token", state.token);
-
-    // keep payload small; daily-check will send per-page
-    params.set("payload", JSON.stringify(payload));
-    params.set("_", Date.now().toString()); // cache buster
-
-    const src = API_URL + "?" + params.toString();
-
-    const script = document.createElement("script");
-    script.src = src;
-    script.async = true;
-
-    window[cbName] = (data) => {
-      cleanup();
-      resolve(data);
-    };
-
-    script.onerror = () => {
-      cleanup();
-      reject(new Error("JSONP request failed: " + action));
-    };
-
-    function cleanup() {
-      try { delete window[cbName]; } catch (_) { window[cbName] = undefined; }
-      if (script && script.parentNode) script.parentNode.removeChild(script);
-    }
-
-    document.body.appendChild(script);
-  });
+function showToast(msg) {
+  const toast = $("#toast");
+  $("#toastInner").textContent = msg;
+  toast.classList.remove("hidden");
+  setTimeout(() => toast.classList.add("hidden"), 2200);
 }
 
-async function api(action, payload) {
-  const res = await jsonp(action, payload);
-  if (!res || typeof res !== "object") throw new Error("Bad API response");
-  if (!res.success) throw new Error(res.error || "API error");
-  return res;
+function showLoading(text = "กำลังโหลด...") {
+  $("#loadingText").textContent = text;
+  $("#loading").classList.remove("hidden");
+}
+function hideLoading() { $("#loading").classList.add("hidden"); }
+
+function setBrand() {
+  $("#brandLogoLogin").src = CFG.LOGO_URL;
+  $("#brandNameLogin").textContent = CFG.BRAND_NAME;
+
+  $("#brandLogo").src = CFG.LOGO_URL;
+  $("#brandName").textContent = CFG.BRAND_NAME;
+
+  $("#brandLogoMobile").src = CFG.LOGO_URL;
+  $("#brandNameMobile").textContent = CFG.BRAND_NAME;
 }
 
-/* ----------------------------- UI Helpers ---------------------------- */
-
-function show(el) { el.classList.remove("hidden"); }
-function hide(el) { el.classList.add("hidden"); }
-function setText(el, t) { el.textContent = t; }
-
-function toast(msg) {
-  const el = $("#toast");
-  setText(el, msg);
-  show(el);
-  setTimeout(() => hide(el), 2500);
-}
-
-function loading(on, text = "กำลังทำงาน...") {
-  const ov = $("#loadingOverlay");
-  setText($("#loadingText"), text);
-  if (on) show(ov); else hide(ov);
-}
-
-function setLogo() {
-  $("#brandLogoLogin").src = LOGO_URL || "";
-  $("#brandLogoSidebar").src = LOGO_URL || "";
-}
-
-function saveSession() {
-  localStorage.setItem("icu_token", state.token || "");
-  localStorage.setItem("icu_staff", JSON.stringify(state.staff));
-}
-
-function loadSession() {
-  const token = localStorage.getItem("icu_token");
-  const staffRaw = localStorage.getItem("icu_staff");
-  if (token) state.token = token;
-  if (staffRaw) {
-    try { state.staff = JSON.parse(staffRaw); } catch (_) {}
-  }
-}
-
-function clearSession() {
-  state.token = null;
-  state.staff = { id: "", name: "", role: "" };
-  state.lastUpdatedIso = null;
-  localStorage.removeItem("icu_token");
-  localStorage.removeItem("icu_staff");
-}
-
-/* ------------------------------ Routing ------------------------------ */
-
-const routes = {
-  "daily-supply": { title: "Daily Check (Supply)", subtitle: "ตรวจนับเวชภัณฑ์", page: "#page-daily-supply" },
-  "daily-medicine": { title: "Daily Check (Medicine)", subtitle: "ตรวจนับยา", page: "#page-daily-medicine" },
-  "reorder": { title: "Reorder Items", subtitle: "รายการที่ต้องสั่งซื้อ", page: "#page-reorder" },
-  "expired": { title: "Expired Items", subtitle: "หมดอายุ / ใกล้หมดอายุ", page: "#page-expired" },
-  "report": { title: "Report", subtitle: "PDF + ส่งอีเมล", page: "#page-report" },
-  "inventory": { title: "Inventory (Admin)", subtitle: "เพิ่ม/แก้ไขรายการ + รูป", page: "#page-inventory", admin: true },
-  "shift-summary": { title: "Shift Summary (Admin)", subtitle: "สรุปการตรวจเวร", page: "#page-shift-summary", admin: true },
-  "user-management": { title: "User Management (Admin)", subtitle: "จัดการสมาชิก", page: "#page-user-management", admin: true },
-  "settings": { title: "Settings (Admin)", subtitle: "สถานะระบบ/สำรองข้อมูล", page: "#page-settings", admin: true }
-};
-
-function switchRoute(route) {
-  if (!routes[route]) route = "daily-supply";
-  if (routes[route].admin && state.staff.role !== "Admin") route = "daily-supply";
-
-  state.ui.route = route;
-
-  $$(".page").forEach(hide);
-  show($(routes[route].page));
-
-  setText($("#pageTitle"), routes[route].title);
-  setText($("#pageSubtitle"), `${state.staff.name} (${state.staff.role}) • LastUpdated: ${state.lastUpdatedIso || "-"}`);
-
-  // active styles
-  $$(".navBtn").forEach(btn => btn.classList.remove("bg-slate-900", "text-white"));
-  $$(".navBtn").forEach(btn => {
-    if (btn.dataset.route === route) btn.classList.add("bg-slate-900", "text-white");
-  });
-
-  // render current page
-  if (route === "daily-supply") renderDaily("Supply");
-  if (route === "daily-medicine") renderDaily("Medicine");
-  if (route === "reorder") renderReorder();
-  if (route === "expired") renderExpired();
-  if (route === "inventory") renderInventory();
-  if (route === "shift-summary") renderShiftSummary();
-  if (route === "user-management") renderUsers();
-}
-
-/* ------------------------------ Data Load ---------------------------- */
-
-async function bootstrap() {
-  loading(true, "กำลังโหลดข้อมูล...");
-  try {
-    const res = await api("bootstrap", {});
-    state.data.inventory = res.data.inventory || [];
-    state.data.reorder = res.data.reorder || [];
-    state.data.expired = res.data.expired || [];
-    state.data.shiftSummary = res.data.shiftSummary || [];
-    state.data.recipients = res.data.recipients || [];
-    state.data.staff = res.data.staff || [];
-
-    state.lastUpdatedIso = res.data.lastUpdatedIso || state.lastUpdatedIso;
-
-    // build cabinet lists
-    buildCabinetSelectors();
-
-    // recipients UI
-    $("#emailRecipientsInput").value = (state.data.recipients || []).join("\n");
-
-    // role based menus
-    if (state.staff.role === "Admin") {
-      show($("#adminMenus"));
-      show($("#bnAdminBtn"));
-
-      // bottom nav layout for admin (5 buttons feel). To keep markup simple: replace grid
-      const bottomNav = $("#bottomNav");
-      bottomNav.className = "grid grid-cols-5";
-      bottomNav.innerHTML = `
-        <button class="bnBtn py-3" data-route="daily-supply">
-          <div class="text-center text-xs"><i class="fa-solid fa-clipboard-check text-base"></i><div>Daily</div></div>
-        </button>
-        <button class="bnBtn py-3" data-route="reorder">
-          <div class="text-center text-xs"><i class="fa-solid fa-cart-shopping text-base"></i><div>Reorder</div></div>
-        </button>
-        <button id="bnAdminBtnInner" class="bnBtn py-3">
-          <div class="text-center text-xs"><i class="fa-solid fa-bars text-base"></i><div>Admin</div></div>
-        </button>
-        <button class="bnBtn py-3" data-route="expired">
-          <div class="text-center text-xs"><i class="fa-solid fa-triangle-exclamation text-base"></i><div>Expired</div></div>
-        </button>
-        <button class="bnBtn py-3" data-route="report">
-          <div class="text-center text-xs"><i class="fa-solid fa-file-pdf text-base"></i><div>Report</div></div>
-        </button>
-      `;
-      // rebind admin button
-      setTimeout(() => {
-        const btn = $("#bnAdminBtnInner");
-        if (btn) btn.addEventListener("click", toggleAdminSheet);
-        bindBottomNavButtons();
-      }, 0);
-    } else {
-      hide($("#adminMenus"));
-      hide($("#bnAdminBtn"));
-      bindBottomNavButtons();
-    }
-
-    switchRoute(state.ui.route || "daily-supply");
-  } finally {
-    loading(false);
-  }
-}
-
-async function pollLastUpdated() {
-  try {
-    const res = await api("getLastUpdated", {});
-    const iso = res.data && res.data.lastUpdatedIso;
-    if (iso && state.lastUpdatedIso && iso !== state.lastUpdatedIso) {
-      state.lastUpdatedIso = iso;
-      toast("มีการอัปเดตข้อมูล — รีโหลดอัตโนมัติ");
-      await bootstrap();
-    } else if (iso && !state.lastUpdatedIso) {
-      state.lastUpdatedIso = iso;
-    }
-  } catch (_) {
-    // ignore silent
-  }
-}
-
-/* ------------------------------ Rendering ---------------------------- */
-
-function buildCabinetSelectors() {
-  const cabinets = Array.from(new Set(state.data.inventory.map(x => (x.cabinet || "").trim()).filter(Boolean))).sort();
-  const options = [`<option value="">ทั้งหมด</option>`].concat(cabinets.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`));
-
-  $("#dailySupplyCabinet").innerHTML = options.join("");
-  $("#dailyMedicineCabinet").innerHTML = options.join("");
-  $("#invCabinetFilter").innerHTML = options.join("");
-}
-
-function renderReorder() {
-  const tbody = $("#reorderTbody");
-  const rows = state.data.reorder || [];
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td class="p-3 text-slate-500" colspan="4">ไม่มีรายการที่ต้องสั่งซื้อเพิ่ม</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.map(r => `
-    <tr class="border-b border-slate-100">
-      <td class="p-2">${escapeHtml(r.name || "")}</td>
-      <td class="p-2">${num(r.currentStock)}</td>
-      <td class="p-2">${num(r.minimumStock)}</td>
-      <td class="p-2 font-semibold">${num(r.reorderQuantity)}</td>
-    </tr>
-  `).join("");
-}
-
-function renderExpired() {
-  const tbody = $("#expiredTbody");
-  const rows = state.data.expired || [];
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td class="p-3 text-slate-500" colspan="5">ไม่มีรายการหมดอายุหรือใกล้หมดอายุ</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.map(r => `
-    <tr class="border-b border-slate-100">
-      <td class="p-2">${escapeHtml(r.name || "")}</td>
-      <td class="p-2">${escapeHtml(r.lotNo || "")}</td>
-      <td class="p-2">${num(r.quantity)}</td>
-      <td class="p-2">${escapeHtml(r.expiryDate || "")}</td>
-      <td class="p-2">${badge(r.status || "")}</td>
-    </tr>
-  `).join("");
-}
-
-function renderShiftSummary() {
-  const tbody = $("#shiftTbody");
-  const rows = state.data.shiftSummary || [];
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td class="p-3 text-slate-500" colspan="4">ยังไม่มีข้อมูลสรุปเวร</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.map(r => `
-    <tr class="border-b border-slate-100">
-      <td class="p-2">${escapeHtml(r.date || "")}</td>
-      <td class="p-2">${escapeHtml(r.shift || "")}</td>
-      <td class="p-2">${escapeHtml(r.staff || "")}</td>
-      <td class="p-2">${escapeHtml(r.note || "")}</td>
-    </tr>
-  `).join("");
-}
-
-function renderUsers() {
-  const tbody = $("#userTbody");
-  const rows = state.data.staff || [];
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td class="p-3 text-slate-500" colspan="4">ไม่มีผู้ใช้ในระบบ</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.map(u => `
-    <tr class="border-b border-slate-100">
-      <td class="p-2">${escapeHtml(u.id || "")}</td>
-      <td class="p-2">${escapeHtml(u.name || "")}</td>
-      <td class="p-2">${escapeHtml(u.role || "")}</td>
-      <td class="p-2">
-        <button class="rounded-lg border border-slate-300 px-2 py-1 hover:bg-slate-100"
-                data-act="editUser" data-id="${escapeAttr(u.id)}">แก้ไข</button>
-        <button class="rounded-lg border border-rose-300 text-rose-700 px-2 py-1 hover:bg-rose-50"
-                data-act="delUser" data-id="${escapeAttr(u.id)}" data-name="${escapeAttr(u.name)}">ลบ</button>
-      </td>
-    </tr>
-  `).join("");
-
-  // bind actions
-  tbody.querySelectorAll("button[data-act]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const act = btn.dataset.act;
-      if (act === "editUser") {
-        const id = btn.dataset.id;
-        const u = rows.find(x => x.id === id);
-        if (!u) return;
-        $("#userEditMode").value = "true";
-        $("#userOriginalId").value = u.id;
-        $("#userId").value = u.id;
-        $("#userName").value = u.name;
-        $("#userPass").value = "";
-        $("#userRole").value = u.role;
-        $("#userId").disabled = true;
-        toast("โหมดแก้ไขผู้ใช้");
-      } else if (act === "delUser") {
-        const id = btn.dataset.id;
-        const name = btn.dataset.name;
-        if (id === state.staff.id) return toast("ไม่สามารถลบผู้ใช้ของตัวเองได้");
-        if (!confirm(`ยืนยันลบผู้ใช้ ${name} (${id}) ?`)) return;
-        loading(true, "กำลังลบผู้ใช้...");
-        try {
-          await api("deleteStaff", { staffId: id });
-          toast("ลบผู้ใช้สำเร็จ");
-          await bootstrap();
-        } catch (e) {
-          toast("ลบไม่สำเร็จ: " + e.message);
-        } finally {
-          loading(false);
-        }
-      }
-    });
-  });
-}
-
-function renderInventory() {
-  const tbody = $("#invTbody");
-  const q = ($("#invSearch").value || "").trim().toLowerCase();
-  const cab = $("#invCabinetFilter").value || "";
-
-  const rows = (state.data.inventory || [])
-    .filter(x => x && x.name)
-    .filter(x => !q || (x.name + " " + (x.lotNo || "")).toLowerCase().includes(q))
-    .filter(x => !cab || (x.cabinet || "") === cab);
-
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td class="p-3 text-slate-500" colspan="8">ไม่มีรายการ</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = rows.map(it => `
-    <tr class="border-b border-slate-100">
-      <td class="p-2">
-        <button class="underline hover:no-underline" data-act="openItem" data-name="${escapeAttr(it.name)}">
-          ${escapeHtml(it.name)}
-        </button>
-      </td>
-      <td class="p-2">${escapeHtml(it.lotNo || "")}</td>
-      <td class="p-2">${num(it.quantity)}</td>
-      <td class="p-2">${num(it.minimumStock)}</td>
-      <td class="p-2">${escapeHtml(it.expiryDate || "")}</td>
-      <td class="p-2">${escapeHtml(it.cabinet || "")}</td>
-      <td class="p-2">${escapeHtml(it.category || "")}</td>
-      <td class="p-2">
-        <button class="rounded-lg border border-slate-300 px-2 py-1 hover:bg-slate-100"
-                data-act="editInv" data-id="${escapeAttr(it.id)}">แก้ไข</button>
-        <button class="rounded-lg border border-rose-300 text-rose-700 px-2 py-1 hover:bg-rose-50"
-                data-act="delInv" data-id="${escapeAttr(it.id)}">ลบ</button>
-      </td>
-    </tr>
-  `).join("");
-
-  // bind actions
-  tbody.querySelectorAll("button[data-act]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const act = btn.dataset.act;
-      if (act === "openItem") {
-        openItemModal(btn.dataset.name);
-      } else if (act === "editInv") {
-        const id = btn.dataset.id;
-        const it = rows.find(x => String(x.id) === String(id));
-        if (!it) return;
-        show($("#inventoryForm"));
-        $("#invId").value = it.id;
-        $("#invName").value = it.name || "";
-        $("#invLot").value = it.lotNo || "";
-        $("#invQty").value = it.quantity || 0;
-        $("#invMin").value = it.minimumStock || 5;
-        $("#invExpiry").value = (it.expiryDateISO || "") || "";
-        $("#invNote").value = it.note || "";
-        $("#invCabinet").value = it.cabinet || "";
-        $("#invCategory").value = it.category || "Medical Supply";
-        toast("โหมดแก้ไขรายการ");
-      } else if (act === "delInv") {
-        const id = btn.dataset.id;
-        if (!confirm("ยืนยันลบรายการนี้?")) return;
-        loading(true, "กำลังลบรายการ...");
-        try {
-          await api("deleteItem", { id });
-          toast("ลบรายการสำเร็จ");
-          await bootstrap();
-        } catch (e) {
-          toast("ลบไม่สำเร็จ: " + e.message);
-        } finally {
-          loading(false);
-        }
-      }
-    });
-  });
-}
-
-function renderDaily(kind /* Supply | Medicine */) {
-  const isSupply = kind === "Supply";
-  const searchEl = isSupply ? $("#dailySupplySearch") : $("#dailyMedicineSearch");
-  const cabEl = isSupply ? $("#dailySupplyCabinet") : $("#dailyMedicineCabinet");
-  const listEl = isSupply ? $("#dailySupplyList") : $("#dailyMedicineList");
-  const prevEl = isSupply ? $("#dailySupplyPrev") : $("#dailyMedicinePrev");
-  const nextEl = isSupply ? $("#dailySupplyNext") : $("#dailyMedicineNext");
-  const pageInfoEl = isSupply ? $("#dailySupplyPageInfo") : $("#dailyMedicinePageInfo");
-
-  const uiState = isSupply ? state.ui.dailySupply : state.ui.dailyMedicine;
-
-  uiState.q = (searchEl.value || "").trim().toLowerCase();
-  uiState.cabinet = cabEl.value || "";
-
-  const rowsAll = (state.data.inventory || [])
-    .filter(x => x && x.name)
-    .filter(x => (x.category || "Medical Supply") === (isSupply ? "Medical Supply" : "Medicine"))
-    .filter(x => !uiState.q || (x.name + " " + (x.lotNo || "")).toLowerCase().includes(uiState.q))
-    .filter(x => !uiState.cabinet || (x.cabinet || "") === uiState.cabinet);
-
-  const total = rowsAll.length;
-  const pages = Math.max(1, Math.ceil(total / uiState.pageSize));
-  uiState.page = Math.min(uiState.page, pages);
-
-  const start = (uiState.page - 1) * uiState.pageSize;
-  const rows = rowsAll.slice(start, start + uiState.pageSize);
-
-  prevEl.disabled = uiState.page <= 1;
-  nextEl.disabled = uiState.page >= pages;
-  prevEl.classList.toggle("opacity-50", prevEl.disabled);
-  nextEl.classList.toggle("opacity-50", nextEl.disabled);
-  setText(pageInfoEl, `หน้า ${uiState.page}/${pages} • ${total} รายการ`);
-
-  if (!rows.length) {
-    listEl.innerHTML = `<div class="text-slate-500 text-sm">ไม่มีรายการ</div>`;
-    return;
-  }
-
-  listEl.innerHTML = rows.map(it => `
-    <div class="rounded-2xl border border-slate-200 bg-white p-3">
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0">
-          <button class="font-semibold underline hover:no-underline text-left" data-act="openItem" data-name="${escapeAttr(it.name)}">
-            ${escapeHtml(it.name)}
-          </button>
-          <div class="text-xs text-slate-500 mt-1">
-            Lot: ${escapeHtml(it.lotNo || "-")} • ตู้: ${escapeHtml(it.cabinet || "-")} • คงเหลือ: ${num(it.quantity)} • Min: ${num(it.minimumStock)}
-          </div>
-          <div class="text-xs mt-1">${expiryBadge(it.expiryStatus, it.expiryDays)}</div>
-        </div>
-
-        <div class="w-28">
-          <label class="text-xs text-slate-500">ตรวจพบ</label>
-          <input type="number" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"
-                 data-check="qty" data-id="${escapeAttr(it.id)}" placeholder="${num(it.quantity)}" />
-        </div>
-      </div>
-    </div>
-  `).join("");
-
-  // bind open item modal
-  listEl.querySelectorAll("button[data-act='openItem']").forEach(btn => {
-    btn.addEventListener("click", () => openItemModal(btn.dataset.name));
-  });
-}
-
-/* ----------------------------- Item Modal ---------------------------- */
-
-async function openItemModal(itemName) {
-  state.ui.modal.currentItemName = itemName;
-  loading(true, "กำลังโหลดรายละเอียด...");
-  try {
-    const res = await api("getItemDetail", { name: itemName });
-    const d = res.data;
-
-    setText($("#itemModalTitle"), d.name || "Item Detail");
-    $("#itemModalImage").src = d.imageUrl || LOGO_URL || "";
-    setText($("#itemModalTotalQty"), num(d.totalQuantity));
-    setText($("#itemModalNearestExpiry"), d.nearestExpiry ? `${d.nearestExpiry.date} (Lot ${d.nearestExpiry.lotNo}, ${num(d.nearestExpiry.quantity)})` : "-");
-    setText($("#itemModalLastReceive"), d.lastReceive ? `${d.lastReceive.date} (+${num(d.lastReceive.quantity)})` : "-");
-    setText($("#itemModalLastUsage"), d.lastUsage ? `${d.lastUsage.date} (-${num(d.lastUsage.quantity)}) โดย ${d.lastUsage.by}` : "-");
-
-    // lots
-    const lotsEl = $("#itemModalLots");
-    lotsEl.innerHTML = (d.lots || []).map(l => `
-      <div class="rounded-xl border border-slate-200 p-3 flex items-center justify-between gap-2">
-        <div class="text-sm">
-          <div class="font-semibold">Lot: ${escapeHtml(l.lotNo || "")}</div>
-          <div class="text-xs text-slate-500">คงเหลือ: ${num(l.quantity)} • หมดอายุ: ${escapeHtml(l.expiryDate || "-")}</div>
-        </div>
-        <div class="text-xs">${expiryBadge(l.expiryStatus, l.expiryDays)}</div>
-      </div>
-    `).join("");
-
-    // usage lot select
-    const lotSelect = $("#usageLotSelect");
-    lotSelect.innerHTML = (d.lots || []).map(l => `<option value="${escapeAttr(l.lotNo)}">${escapeHtml(l.lotNo)} (คงเหลือ ${num(l.quantity)})</option>`).join("");
-
-    // role-based buttons
-    if (state.staff.role === "Admin") show($("#btnQuickEdit")); else hide($("#btnQuickEdit"));
-
-    // open modal
-    show($("#modalOverlay"));
-    hide($("#quickUsageBox"));
-    $("#usageQty").value = "";
-
-    // bind quick edit => fill inventory form with the first lot row
-    $("#btnQuickEdit").onclick = () => {
-      const first = (d.lots && d.lots[0]) ? d.lots[0] : null;
-      if (!first) return;
-      switchRoute("inventory");
-      show($("#inventoryForm"));
-      $("#invId").value = first.id;
-      $("#invName").value = d.name || "";
-      $("#invLot").value = first.lotNo || "";
-      $("#invQty").value = first.quantity || 0;
-      $("#invMin").value = first.minimumStock || 5;
-      $("#invExpiry").value = first.expiryDateISO || "";
-      $("#invNote").value = first.note || "";
-      $("#invCabinet").value = first.cabinet || "";
-      $("#invCategory").value = first.category || "Medical Supply";
-      hide($("#modalOverlay"));
-      toast("เปิดหน้า Inventory เพื่อแก้ไข");
-    };
-
-  } catch (e) {
-    toast("โหลดรายละเอียดไม่สำเร็จ: " + e.message);
-  } finally {
-    loading(false);
-  }
-}
-
-function toggleQuickUsage() {
-  const box = $("#quickUsageBox");
-  box.classList.toggle("hidden");
-}
-
-async function submitUsage() {
-  const lotNo = $("#usageLotSelect").value;
-  const qty = parseInt($("#usageQty").value || "0", 10);
-  const name = state.ui.modal.currentItemName;
-
-  if (!name) return toast("ไม่พบรายการ");
-  if (!lotNo) return toast("กรุณาเลือก Lot");
-  if (!qty || qty <= 0) return toast("กรุณาใส่จำนวนที่เบิก");
-
-  loading(true, "กำลังบันทึกการเบิก...");
-  try {
-    await api("recordUsage", { itemName: name, lotNo, quantity: qty });
-    toast("บันทึกการเบิกสำเร็จ");
-    await bootstrap();
-    // refresh modal
-    await openItemModal(name);
-  } catch (e) {
-    toast("บันทึกไม่สำเร็จ: " + e.message);
-  } finally {
-    loading(false);
-  }
-}
-
-/* ----------------------------- Submissions --------------------------- */
-
-async function submitDaily(kind /* Supply | Medicine */) {
-  const isSupply = kind === "Supply";
-  const listEl = isSupply ? $("#dailySupplyList") : $("#dailyMedicineList");
-
-  // collect inputs in current page only (small payload)
-  const inputs = Array.from(listEl.querySelectorAll("input[data-check='qty']"));
-  const records = [];
-  inputs.forEach(inp => {
-    const id = inp.dataset.id;
-    const found = inp.value.trim();
-    if (found === "") return; // allow partial
-    const item = (state.data.inventory || []).find(x => String(x.id) === String(id));
-    if (!item) return;
-    records.push({
-      itemName: item.name,
-      lotNo: item.lotNo,
-      checkedQuantity: parseInt(found, 10),
-      expectedQuantity: parseInt(item.quantity || 0, 10),
-      minimumStock: parseInt(item.minimumStock || 0, 10),
-      expiryDate: item.expiryDate || ""
-    });
-  });
-
-  if (!records.length) return toast("ยังไม่มีรายการที่กรอกจำนวนตรวจพบ");
-
-  loading(true, "กำลังบันทึก Daily Check...");
-  try {
-    const sheetType = isSupply ? "Daily Check Supply" : "Daily Check Medicine";
-    const res = await api("saveDailyCheck", { sheetType, records });
-    toast(res.message || "บันทึกสำเร็จ");
-    await bootstrap();
-  } catch (e) {
-    toast("บันทึกไม่สำเร็จ: " + e.message);
-  } finally {
-    loading(false);
-  }
-}
-
-/* --------------------------- Inventory Form -------------------------- */
-
-async function upsertInventory(e) {
-  e.preventDefault();
-
-  const payload = {
-    id: $("#invId").value || "",
-    name: $("#invName").value.trim(),
-    lotNo: $("#invLot").value.trim(),
-    quantity: parseInt($("#invQty").value || "0", 10),
-    minimumStock: parseInt($("#invMin").value || "5", 10),
-    expiryDate: $("#invExpiry").value || "",
-    note: $("#invNote").value.trim(),
-    cabinet: $("#invCabinet").value.trim(),
-    category: $("#invCategory").value
+async function api(action, payload = {}) {
+  const body = {
+    action,
+    ...payload,
+    staffId: state.session?.staffId || payload.staffId,
+    token: state.session?.token || payload.token
   };
 
-  if (!payload.name || !payload.lotNo) return toast("กรอก รายการ และ Lot ให้ครบ");
-
-  loading(true, "กำลังบันทึกรายการ...");
-  try {
-    const res = await api("saveInventoryItem", payload);
-    toast(res.message || "บันทึกสำเร็จ");
-
-    // image upload (optional) via POST no-cors
-    const file = ($("#invImage").files && $("#invImage").files[0]) ? $("#invImage").files[0] : null;
-    if (file) {
-      toast("กำลังอัปโหลดรูป...");
-      await uploadImageNoCors(res.data && res.data.id ? res.data.id : (payload.id || ""), file);
-      toast("อัปโหลดรูปแล้ว (กำลังรีโหลดข้อมูล)");
-    }
-
-    // reset form
-    $("#inventoryForm").reset();
-    $("#invId").value = "";
-    $("#invMin").value = "5";
-    $("#inventoryForm").classList.add("hidden");
-
-    await bootstrap();
-  } catch (e2) {
-    toast("บันทึกไม่สำเร็จ: " + e2.message);
-  } finally {
-    loading(false);
-  }
-}
-
-async function uploadImageNoCors(itemRowId, file) {
-  if (!itemRowId) throw new Error("ไม่พบ id สำหรับอัปโหลดรูป");
-
-  // compress image to keep base64 smaller (important for Apps Script)
-  const compressed = await compressImage(file, 1024, 0.82);
-
-  const fd = new FormData();
-  fd.append("token", state.token);
-  fd.append("id", String(itemRowId));
-  fd.append("mimeType", compressed.type);
-  fd.append("fileName", compressed.name);
-  fd.append("base64", compressed.base64); // pure base64 (no data: prefix)
-
-  // Important: no-cors => opaque response (we cannot read), so we refresh after
-  await fetch(API_URL + "?action=uploadItemImage", {
+  const res = await fetch(CFG.API_URL, {
     method: "POST",
-    mode: "no-cors",
-    body: fd
+    headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoid preflight
+    body: JSON.stringify(body),
+    redirect: "follow"
   });
 
-  // give server time then refresh by polling
-  await new Promise(r => setTimeout(r, 1200));
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); }
+  catch (e) { throw new Error("API ตอบกลับไม่ใช่ JSON: " + text.slice(0, 200)); }
+
+  if (!json.success) throw new Error(json.error || "API error");
+  return json;
 }
 
-function compressImage(file, maxW = 1024, quality = 0.8) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const fr = new FileReader();
+function saveSession(sess) {
+  state.session = sess;
+  sessionStorage.setItem("ICU_SESSION", JSON.stringify(sess));
+}
+function loadSession() {
+  const raw = sessionStorage.getItem("ICU_SESSION");
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+function clearSession() {
+  state.session = null;
+  sessionStorage.removeItem("ICU_SESSION");
+}
 
-    fr.onload = () => {
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        const ratio = Math.min(1, maxW / img.width);
-        canvas.width = Math.round(img.width * ratio);
-        canvas.height = Math.round(img.height * ratio);
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+function roleAllows(menuId) {
+  const m = MENU.find(x => x.id === menuId);
+  if (!m) return false;
+  return m.roles.includes(state.session.role);
+}
 
-        const mime = "image/jpeg"; // normalize for size
-        canvas.toBlob((blob) => {
-          if (!blob) return reject(new Error("Compress failed"));
-          const reader = new FileReader();
-          reader.onload = () => {
-            const dataUrl = reader.result; // data:image/jpeg;base64,...
-            const base64 = String(dataUrl).split(",")[1] || "";
-            resolve({
-              name: (file.name || "item") + ".jpg",
-              type: mime,
-              base64
-            });
-          };
-          reader.readAsDataURL(blob);
-        }, mime, quality);
-      };
+function setUserBadges() {
+  const t = `${state.session.staffName} • ${state.session.role}`;
+  $("#userBadge").textContent = t;
+  $("#userBadgeMobile").textContent = t;
 
-      img.onerror = reject;
-      img.src = fr.result;
-    };
+  $("#profileStaffId").textContent = state.session.staffId;
+  $("#profileStaffName").textContent = state.session.staffName;
+  $("#profileRole").textContent = state.session.role;
 
-    fr.onerror = reject;
-    fr.readAsDataURL(file);
+  $("#kpiRole").textContent = state.session.role;
+}
+
+function buildSidebar() {
+  const nav = $("#sidebarNav");
+  nav.innerHTML = "";
+
+  MENU.filter(m => !m.hiddenOnSidebar).forEach(m => {
+    if (!m.roles.includes(state.session.role)) return;
+
+    const btn = document.createElement("button");
+    btn.className = "w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm hover:bg-slate-50";
+    btn.dataset.tab = m.id;
+    btn.innerHTML = `<i class="fa-solid ${m.icon} text-slate-700 w-5"></i><span class="text-slate-800">${m.label}</span>`;
+    btn.addEventListener("click", () => showTab(m.id));
+    nav.appendChild(btn);
+  });
+
+  highlightSidebar();
+}
+
+function highlightSidebar() {
+  $$("#sidebarNav button").forEach(b => {
+    const active = b.dataset.tab === state.currentTab;
+    b.classList.toggle("bg-slate-900", active);
+    b.classList.toggle("text-white", active);
+    b.querySelector("i")?.classList.toggle("text-white", active);
+    b.querySelector("i")?.classList.toggle("text-slate-700", !active);
   });
 }
 
-/* ------------------------------ Users ------------------------------- */
-
-async function upsertUser(e) {
-  e.preventDefault();
-
-  const editMode = $("#userEditMode").value === "true";
-  const originalId = $("#userOriginalId").value || "";
-  const staffId = $("#userId").value.trim();
-  const name = $("#userName").value.trim();
-  const password = $("#userPass").value; // optional on edit
-  const role = $("#userRole").value;
-
-  if (!staffId || !name) return toast("กรอก StaffID และ Name ให้ครบ");
-
-  loading(true, "กำลังบันทึกผู้ใช้...");
-  try {
-    await api("upsertStaff", { editMode, originalId, staffId, name, password, role });
-    toast("บันทึกผู้ใช้สำเร็จ");
-    resetUserForm();
-    await bootstrap();
-  } catch (e2) {
-    toast("บันทึกไม่สำเร็จ: " + e2.message);
-  } finally {
-    loading(false);
+function showTab(tabId) {
+  // special: dailyCheckAuto -> choose based on role
+  if (tabId === "dailyCheckAuto") {
+    if (state.session.role === ROLES.RN) tabId = "dailyCheckMedicineTab";
+    else tabId = "dailyCheckSupplyTab";
   }
+
+  if (!roleAllows(tabId)) {
+    showToast("ไม่มีสิทธิ์เข้าหน้านี้");
+    return;
+  }
+
+  state.currentTab = tabId;
+  $$(".tabContent").forEach(s => s.classList.add("hidden"));
+  const target = $("#" + tabId);
+  if (target) target.classList.remove("hidden");
+  highlightSidebar();
+
+  // render each tab
+  if (tabId === "dashboardTab") renderDashboard();
+  if (tabId === "inventoryTab") renderInventory();
+  if (tabId === "reorderTab") renderReorder();
+  if (tabId === "expiredTab") renderExpired();
+  if (tabId === "userManagementTab") renderStaff();
+  if (tabId === "reportTab") renderReport();
+  if (tabId === "dailyCheckSupplyTab") renderDaily("supply");
+  if (tabId === "dailyCheckMedicineTab") renderDaily("medicine");
 }
 
-function resetUserForm() {
-  $("#userForm").reset();
-  $("#userEditMode").value = "false";
-  $("#userOriginalId").value = "";
-  $("#userId").disabled = false;
+function setBottomNavForRole() {
+  // Admin: show center button, and make grid 4->5 visually by showing it
+  const adminFab = $("#adminFab");
+  if (state.session.role === ROLES.ADMIN) adminFab.classList.remove("hidden");
+  else adminFab.classList.add("hidden");
 }
 
-/* ------------------------------ Report ------------------------------ */
+function openAdminSheet() {
+  $("#adminSheetOverlay").classList.remove("hidden");
+  requestAnimationFrame(() => $("#adminSheet").classList.remove("sheet-hidden"));
+  $("#adminSheet").classList.add("sheet-show");
+}
+function closeAdminSheet() {
+  $("#adminSheet").classList.add("sheet-hidden");
+  setTimeout(() => $("#adminSheetOverlay").classList.add("hidden"), 180);
+}
 
-async function saveRecipients() {
-  const lines = ($("#emailRecipientsInput").value || "")
-    .split("\n")
-    .map(x => x.trim())
-    .filter(Boolean);
+function buildAdminSheetGrid() {
+  const grid = $("#adminSheetGrid");
+  grid.innerHTML = "";
+  ADMIN_SHEET_MENU.forEach(m => {
+    const b = document.createElement("button");
+    b.className = "rounded-2xl border border-slate-200 p-3 text-left hover:bg-slate-50";
+    b.innerHTML = `
+      <div class="w-10 h-10 rounded-2xl bg-slate-900 text-white flex items-center justify-center">
+        <i class="fa-solid ${m.icon}"></i>
+      </div>
+      <div class="mt-2 text-sm font-semibold">${m.label}</div>`;
+    b.addEventListener("click", () => {
+      closeAdminSheet();
+      showTab(m.id);
+    });
+    grid.appendChild(b);
+  });
+}
 
-  loading(true, "กำลังบันทึกอีเมลผู้รับ...");
+function fillCabinetSelect(sel, cabinets) {
+  sel.innerHTML = "";
+  const optAll = document.createElement("option");
+  optAll.value = "";
+  optAll.textContent = "ทุกตู้";
+  sel.appendChild(optAll);
+
+  cabinets.forEach(c => {
+    const o = document.createElement("option");
+    o.value = c;
+    o.textContent = c;
+    sel.appendChild(o);
+  });
+}
+
+function formatExpiryBadge(item) {
+  const d = item.expiryDays;
+  if (d === null || d === undefined) return `<span class="text-slate-400">-</span>`;
+  if (d <= 0) return `<span class="text-red-700 font-semibold">หมดอายุ</span>`;
+  if (d <= 30) return `<span class="text-red-700 font-semibold">≤30 วัน</span>`;
+  if (d <= 60) return `<span class="text-amber-700 font-semibold">≤60 วัน</span>`;
+  if (d <= 180) return `<span class="text-yellow-700 font-semibold">≤180 วัน</span>`;
+  return `<span class="text-slate-500">ปกติ</span>`;
+}
+
+function nowTh() {
+  return new Date().toLocaleString("th-TH");
+}
+
+async function refreshAll() {
+  showLoading("กำลังดึงข้อมูล...");
   try {
-    await api("updateEmailRecipients", { emails: lines });
-    toast("บันทึกอีเมลผู้รับสำเร็จ");
-    await bootstrap();
+    const snap = await api("getSnapshot", {});
+    state.data.inventory = snap.data.inventory || [];
+    state.data.reorder = snap.data.reorder || [];
+    state.data.expired = snap.data.expired || [];
+    state.data.staff = snap.data.staff || [];
+    state.data.emailRecipients = snap.data.emailRecipients || [];
+    state.data.cabinets = snap.data.cabinets || [];
+
+    $("#lastSyncText").textContent = nowTh();
+    $("#kpiLots").textContent = state.data.inventory.length;
+    $("#kpiReorder").textContent = state.data.reorder.length;
+    $("#kpiExpiry").textContent = state.data.expired.length;
+
+    // refresh current tab
+    showTab(state.currentTab);
   } catch (e) {
-    toast("บันทึกไม่สำเร็จ: " + e.message);
+    showToast(e.message);
   } finally {
-    loading(false);
+    hideLoading();
   }
+}
+
+/* ---------------- Dashboard ---------------- */
+function renderDashboard() {
+  const reorderTop = state.data.reorder.slice(0, 5).map(r =>
+    `• ${r.name} (ต้องสั่ง ${r.toOrder})`
+  ).join("<br>") || "—";
+
+  const expiryTop = state.data.expired.slice(0, 5).map(x =>
+    `• ${x.name} (Lot ${x.lotNo}) ${x.expiryDate} — ${x.status}`
+  ).join("<br>") || "—";
+
+  $("#reorderTop").innerHTML = reorderTop;
+  $("#expiryTop").innerHTML = expiryTop;
+}
+
+/* ---------------- Reorder ---------------- */
+function renderReorder() {
+  const tb = $("#reorderTbody");
+  tb.innerHTML = "";
+  if (!state.data.reorder.length) {
+    tb.innerHTML = `<tr><td colspan="4" class="py-4 text-slate-500">ไม่มีรายการ</td></tr>`;
+    return;
+  }
+  state.data.reorder.forEach(r => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="py-2 pr-3">${r.name}</td>
+      <td class="py-2 pr-3">${r.totalQty}</td>
+      <td class="py-2 pr-3">${r.minimumStock}</td>
+      <td class="py-2 pr-3 font-semibold">${r.toOrder}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+/* ---------------- Expired ---------------- */
+function renderExpired() {
+  const tb = $("#expiredTbody");
+  tb.innerHTML = "";
+  if (!state.data.expired.length) {
+    tb.innerHTML = `<tr><td colspan="5" class="py-4 text-slate-500">ไม่มีรายการ</td></tr>`;
+  } else {
+    state.data.expired.forEach(x => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="py-2 pr-3">${x.name}</td>
+        <td class="py-2 pr-3">${x.lotNo}</td>
+        <td class="py-2 pr-3">${x.quantity}</td>
+        <td class="py-2 pr-3">${x.expiryDate}</td>
+        <td class="py-2 pr-3">${x.status}</td>`;
+      tb.appendChild(tr);
+    });
+  }
+
+  // admin actions
+  const isAdmin = state.session.role === ROLES.ADMIN;
+  $("#sendExpirySummaryBtn").classList.toggle("hidden", !isAdmin);
+}
+
+/* ---------------- Report ---------------- */
+function renderReport() {
+  const isAdmin = state.session.role === ROLES.ADMIN;
+  $("#sendReportBtn").classList.toggle("hidden", !isAdmin);
+
+  const box = $("#emailRecipientsBox");
+  const emails = state.data.emailRecipients || [];
+  box.innerHTML = emails.length ? emails.map(e => `• ${e}`).join("<br>") : "—";
 }
 
 async function sendReport() {
-  loading(true, "กำลังสร้างและส่งรายงาน...");
+  showLoading("กำลังสร้าง PDF และส่งอีเมล...");
   try {
-    const res = await api("sendReportManually", {});
-    toast(res.message || "ส่งรายงานสำเร็จ");
+    const r = await api("sendReportManually", {});
+    showToast(r.message || "ส่งรายงานสำเร็จ");
   } catch (e) {
-    toast("ส่งรายงานไม่สำเร็จ: " + e.message);
+    showToast(e.message);
   } finally {
-    loading(false);
+    hideLoading();
   }
 }
 
-/* ------------------------------ Settings ---------------------------- */
-
-async function loadStatus() {
-  loading(true, "กำลังโหลดสถานะ...");
+async function sendExpirySummary() {
+  showLoading("กำลังส่งอีเมลสรุปใกล้หมดอายุ...");
   try {
-    const res = await api("getSystemStatus", {});
-    $("#systemStatusBox").textContent = JSON.stringify(res.data || {}, null, 2);
-    toast("โหลดสถานะแล้ว");
+    const r = await api("sendExpirySummaryEmail", {});
+    showToast(r.message || "ส่งสำเร็จ");
   } catch (e) {
-    toast("โหลดสถานะไม่สำเร็จ: " + e.message);
+    showToast(e.message);
   } finally {
-    loading(false);
+    hideLoading();
   }
 }
 
-async function backupNow() {
-  loading(true, "กำลังสำรองข้อมูล...");
+/* ---------------- Inventory ---------------- */
+function renderInventory() {
+  const isAdmin = state.session.role === ROLES.ADMIN;
+  $("#openAddItemBtn").classList.toggle("hidden", !isAdmin);
+
+  fillCabinetSelect($("#inventoryCabinet"), state.data.cabinets);
+  fillCabinetSelect($("#dailySupplyCabinet"), state.data.cabinets);
+  fillCabinetSelect($("#dailyMedicineCabinet"), state.data.cabinets);
+
+  const search = ($("#inventorySearch").value || "").toLowerCase().trim();
+  const cab = $("#inventoryCabinet").value;
+  const cat = $("#inventoryCategory").value;
+
+  let rows = state.data.inventory.slice();
+  if (cat) rows = rows.filter(x => (x.category || "") === cat);
+  if (cab) rows = rows.filter(x => (x.cabinet || "") === cab);
+  if (search) {
+    rows = rows.filter(x =>
+      (x.name || "").toLowerCase().includes(search) ||
+      (x.lotNo || "").toLowerCase().includes(search) ||
+      (x.cabinet || "").toLowerCase().includes(search) ||
+      (x.category || "").toLowerCase().includes(search)
+    );
+  }
+
+  const tb = $("#inventoryTbody");
+  tb.innerHTML = "";
+  if (!rows.length) {
+    tb.innerHTML = `<tr><td colspan="8" class="py-4 text-slate-500">ไม่มีรายการ</td></tr>`;
+    return;
+  }
+
+  rows.forEach(item => {
+    const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-50";
+    tr.innerHTML = `
+      <td class="py-2 pr-3 font-medium">${item.name}</td>
+      <td class="py-2 pr-3">${item.lotNo}</td>
+      <td class="py-2 pr-3">${item.quantity}</td>
+      <td class="py-2 pr-3">${item.minimumStock}</td>
+      <td class="py-2 pr-3">${item.expiryDate || "-"} ${formatExpiryBadge(item)}</td>
+      <td class="py-2 pr-3">${item.cabinet || "-"}</td>
+      <td class="py-2 pr-3">${item.category || "-"}</td>
+      <td class="py-2 text-right">
+        ${isAdmin ? `
+          <button class="px-2 py-1 rounded-lg border border-slate-200 hover:bg-white text-xs" data-act="edit" data-id="${item.id}">แก้ไข</button>
+          <button class="ml-1 px-2 py-1 rounded-lg border border-slate-200 hover:bg-white text-xs text-red-700" data-act="del" data-id="${item.id}">ลบ</button>
+        ` : `<button class="px-2 py-1 rounded-lg border border-slate-200 hover:bg-white text-xs" data-act="view" data-name="${encodeURIComponent(item.name)}">ดู</button>`}
+      </td>
+    `;
+
+    tr.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+
+      ev.stopPropagation();
+      const act = btn.dataset.act;
+      if (act === "edit") openEditItem(item.id);
+      if (act === "del") deleteItem(item.id);
+      if (act === "view") openItemDetail(decodeURIComponent(btn.dataset.name));
+    });
+
+    // allow click row to view detail for all roles
+    tr.addEventListener("dblclick", () => openItemDetail(item.name));
+
+    tb.appendChild(tr);
+  });
+}
+
+async function openItemDetail(itemName) {
+  showLoading("กำลังโหลดรายละเอียด...");
   try {
-    const res = await api("backupData", {});
-    toast(res.message || "สำรองข้อมูลสำเร็จ");
+    const r = await api("getItemDetail", { itemName });
+    const d = r.data;
+
+    const lotsHtml = (d.lots || []).map(l => `
+      <tr class="border-t border-slate-100">
+        <td class="py-2 pr-3">${l.lotNo}</td>
+        <td class="py-2 pr-3">${l.quantity}</td>
+        <td class="py-2 pr-3">${l.expiryDate || "-"}</td>
+        <td class="py-2 pr-3">${l.cabinet || "-"}</td>
+      </tr>
+    `).join("");
+
+    const img = d.imageUrl ? `<img src="${d.imageUrl}" class="w-24 h-24 rounded-2xl object-cover border border-slate-200" />`
+                           : `<div class="w-24 h-24 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400"><i class="fa-solid fa-image"></i></div>`;
+
+    $("#itemModalBody").innerHTML = `
+      <div class="flex gap-4">
+        ${img}
+        <div class="min-w-0">
+          <div class="text-base font-semibold">${d.name}</div>
+          <div class="text-sm text-slate-600 mt-1">คงเหลือรวม: <span class="font-semibold">${d.totalQty}</span></div>
+          <div class="text-sm text-slate-600">วันหมดอายุใกล้สุด: <span class="font-semibold">${d.nearestExpiry?.expiryDate || "-"}</span> (จำนวน ${d.nearestExpiry?.quantity || "-"})</div>
+          <div class="text-sm text-slate-600">รับเข้าล่าสุด: <span class="font-semibold">${d.lastIn ? `${d.lastIn.qty} (${d.lastIn.date})` : "-"}</span></div>
+          <div class="text-sm text-slate-600">เบิกล่าสุด: <span class="font-semibold">${d.lastOut ? `${d.lastOut.qty} (${d.lastOut.date})` : "-"}</span></div>
+        </div>
+      </div>
+
+      <div class="mt-4 rounded-2xl border border-slate-200 p-3">
+        <div class="font-semibold mb-2">Lots</div>
+        <div class="overflow-auto">
+          <table class="min-w-full text-sm">
+            <thead class="text-xs text-slate-500">
+              <tr>
+                <th class="text-left py-2 pr-3">Lot</th>
+                <th class="text-left py-2 pr-3">จำนวน</th>
+                <th class="text-left py-2 pr-3">Expiry</th>
+                <th class="text-left py-2 pr-3">ตู้</th>
+              </tr>
+            </thead>
+            <tbody>${lotsHtml || `<tr><td colspan="4" class="py-3 text-slate-500">—</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    $("#itemModal").classList.remove("hidden");
   } catch (e) {
-    toast("สำรองไม่สำเร็จ: " + e.message);
+    showToast(e.message);
   } finally {
-    loading(false);
+    hideLoading();
   }
 }
 
-/* ------------------------------ Auth ------------------------------- */
+function closeItemModal() { $("#itemModal").classList.add("hidden"); }
 
+function openItemEditModal() { $("#itemEditModal").classList.remove("hidden"); }
+function closeItemEditModal() { $("#itemEditModal").classList.add("hidden"); }
+
+function resetItemForm() {
+  $("#itemId").value = "";
+  $("#itemName").value = "";
+  $("#itemLot").value = "";
+  $("#itemQty").value = 0;
+  $("#itemMin").value = 5;
+  $("#itemExpiry").value = "";
+  $("#itemCabinet").value = "";
+  $("#itemCategory").value = "Medical Supply";
+  $("#itemNote").value = "";
+  $("#itemImage").value = "";
+  state.editItemImageUrl = "";
+}
+
+function openAddItem() {
+  if (state.session.role !== ROLES.ADMIN) return;
+  $("#itemEditTitle").textContent = "เพิ่มรายการ";
+  resetItemForm();
+  openItemEditModal();
+}
+
+function openEditItem(id) {
+  if (state.session.role !== ROLES.ADMIN) return;
+  const item = state.data.inventory.find(x => String(x.id) === String(id));
+  if (!item) return;
+
+  $("#itemEditTitle").textContent = "แก้ไขรายการ";
+  $("#itemId").value = item.id;
+  $("#itemName").value = item.name || "";
+  $("#itemLot").value = item.lotNo || "";
+  $("#itemQty").value = item.quantity ?? 0;
+  $("#itemMin").value = item.minimumStock ?? 5;
+  $("#itemExpiry").value = item.expiryDate || "";
+  $("#itemCabinet").value = item.cabinet || "";
+  $("#itemCategory").value = item.category || "Medical Supply";
+  $("#itemNote").value = item.note || "";
+  $("#itemImage").value = "";
+  state.editItemImageUrl = item.imageUrl || "";
+  openItemEditModal();
+}
+
+async function deleteItem(id) {
+  if (state.session.role !== ROLES.ADMIN) return;
+  if (!confirm("ยืนยันลบรายการนี้?")) return;
+
+  showLoading("กำลังลบ...");
+  try {
+    const r = await api("deleteItem", { id });
+    showToast(r.message || "ลบสำเร็จ");
+    await refreshAll();
+  } catch (e) {
+    showToast(e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const rd = new FileReader();
+    rd.onload = () => resolve(String(rd.result).split(",")[1]); // base64 only
+    rd.onerror = reject;
+    rd.readAsDataURL(file);
+  });
+}
+
+async function saveItem(ev) {
+  ev.preventDefault();
+  if (state.session.role !== ROLES.ADMIN) return;
+
+  showLoading("กำลังบันทึกรายการ...");
+
+  try {
+    let imageUrl = state.editItemImageUrl;
+
+    const f = $("#itemImage").files?.[0];
+    if (f) {
+      const b64 = await fileToBase64(f);
+      const up = await api("uploadItemImage", {
+        filename: f.name,
+        mimeType: f.type || "image/jpeg",
+        base64: b64
+      });
+      imageUrl = up.data.imageUrl;
+    }
+
+    const payload = {
+      itemData: {
+        id: $("#itemId").value || "",
+        name: $("#itemName").value.trim(),
+        lotNo: $("#itemLot").value.trim(),
+        quantity: parseInt($("#itemQty").value || "0", 10),
+        minimumStock: parseInt($("#itemMin").value || "5", 10),
+        expiryDate: $("#itemExpiry").value.trim(),
+        note: $("#itemNote").value.trim(),
+        cabinet: $("#itemCabinet").value.trim(),
+        category: $("#itemCategory").value,
+        imageUrl
+      }
+    };
+
+    const r = await api("saveInventoryItem", payload);
+    showToast(r.message || "บันทึกสำเร็จ");
+    closeItemEditModal();
+    await refreshAll();
+  } catch (e) {
+    showToast(e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+/* ---------------- Daily Check ---------------- */
+function currentShiftLocal() {
+  const h = new Date().getHours();
+  if (h >= 7 && h < 15) return "เช้า";
+  if (h >= 15 && h < 23) return "บ่าย";
+  return "ดึก";
+}
+
+function renderDaily(kind) {
+  const isSupply = kind === "supply";
+  const role = state.session.role;
+
+  // role guard
+  if (isSupply && !(role === ROLES.ADMIN || role === ROLES.PN)) {
+    showToast("RN ไม่สามารถตรวจเวชภัณฑ์ (ตามสิทธิ์เดิม)");
+    showTab("dashboardTab");
+    return;
+  }
+  if (!isSupply && !(role === ROLES.ADMIN || role === ROLES.RN)) {
+    showToast("PN ไม่สามารถตรวจยา (ตามสิทธิ์เดิม)");
+    showTab("dashboardTab");
+    return;
+  }
+
+  const shift = currentShiftLocal();
+  if (isSupply) $("#dailySupplyShift").textContent = shift;
+  else $("#dailyMedicineShift").textContent = shift;
+
+  const search = (isSupply ? $("#dailySupplySearch").value : $("#dailyMedicineSearch").value).toLowerCase().trim();
+  const cab = (isSupply ? $("#dailySupplyCabinet").value : $("#dailyMedicineCabinet").value);
+
+  const category = isSupply ? "Medical Supply" : "Medicine";
+  let rows = state.data.inventory.filter(x => (x.category || "") === category);
+
+  if (cab) rows = rows.filter(x => (x.cabinet || "") === cab);
+  if (search) {
+    rows = rows.filter(x =>
+      (x.name || "").toLowerCase().includes(search) ||
+      (x.lotNo || "").toLowerCase().includes(search) ||
+      (x.cabinet || "").toLowerCase().includes(search)
+    );
+  }
+
+  const tb = isSupply ? $("#dailySupplyTbody") : $("#dailyMedicineTbody");
+  tb.innerHTML = "";
+  if (!rows.length) {
+    tb.innerHTML = `<tr><td colspan="6" class="py-4 text-slate-500">ไม่มีรายการ</td></tr>`;
+    return;
+  }
+
+  rows.forEach(x => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="py-2 pr-3">${x.name}</td>
+      <td class="py-2 pr-3">${x.lotNo}</td>
+      <td class="py-2 pr-3">${x.quantity}</td>
+      <td class="py-2 pr-3">
+        <input data-check="qty" data-id="${x.id}" type="number" min="0"
+          class="w-24 rounded-xl border border-slate-200 px-2 py-1 text-sm" value="${x.quantity}">
+      </td>
+      <td class="py-2 pr-3">${x.cabinet || "-"}</td>
+      <td class="py-2 pr-3">${x.expiryDate || "-"} ${formatExpiryBadge(x)}</td>
+    `;
+    tb.appendChild(tr);
+  });
+}
+
+async function saveDaily(kind) {
+  const isSupply = kind === "supply";
+  const shift = currentShiftLocal();
+  const category = isSupply ? "Medical Supply" : "Medicine";
+
+  const tb = isSupply ? $("#dailySupplyTbody") : $("#dailyMedicineTbody");
+  const inputs = Array.from(tb.querySelectorAll('input[data-check="qty"]'));
+
+  const mapById = new Map(state.data.inventory.map(x => [String(x.id), x]));
+  const records = inputs.map(inp => {
+    const item = mapById.get(String(inp.dataset.id));
+    const counted = parseInt(inp.value || "0", 10);
+    return {
+      date: new Date().toLocaleDateString("th-TH"),
+      name: item.name,
+      lotNo: item.lotNo,
+      expectedQty: item.quantity,
+      countedQty: counted,
+      cabinet: item.cabinet || "",
+      category: item.category || "",
+      shift
+    };
+  }).filter(r => r.category === category);
+
+  showLoading("กำลังบันทึก Daily Check...");
+  try {
+    const r = await api("saveDailyCheckEx", { checkType: isSupply ? "Supply" : "Medicine", records });
+    showToast(r.message || "บันทึกสำเร็จ");
+    await refreshAll();
+  } catch (e) {
+    showToast(e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+/* ---------------- Staff ---------------- */
+function renderStaff() {
+  if (state.session.role !== ROLES.ADMIN) {
+    showToast("ต้องเป็น Admin");
+    showTab("dashboardTab");
+    return;
+  }
+
+  const tb = $("#staffTbody");
+  tb.innerHTML = "";
+  const rows = state.data.staff || [];
+  if (!rows.length) {
+    tb.innerHTML = `<tr><td colspan="4" class="py-4 text-slate-500">ไม่มีข้อมูล</td></tr>`;
+    return;
+  }
+
+  rows.forEach(s => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="py-2 pr-3">${s.id}</td>
+      <td class="py-2 pr-3">${s.name}</td>
+      <td class="py-2 pr-3">${s.role}</td>
+      <td class="py-2 text-right">
+        <button class="px-2 py-1 rounded-lg border border-slate-200 hover:bg-white text-xs" data-act="edit">แก้ไข</button>
+        <button class="ml-1 px-2 py-1 rounded-lg border border-slate-200 hover:bg-white text-xs text-red-700" data-act="del">ลบ</button>
+      </td>
+    `;
+    tr.addEventListener("click", async (ev) => {
+      const b = ev.target.closest("button");
+      if (!b) return;
+      const act = b.dataset.act;
+
+      if (act === "edit") {
+        $("#staffEditMode").value = "true";
+        $("#staffIdInput").value = s.id;
+        $("#staffIdInput").disabled = true;
+        $("#staffNameInput").value = s.name;
+        $("#staffRoleInput").value = s.role;
+        $("#staffPassInput").value = ""; // require re-enter
+      }
+
+      if (act === "del") {
+        if (!confirm(`ยืนยันลบ ${s.id}?`)) return;
+        showLoading("กำลังลบผู้ใช้...");
+        try {
+          const r = await api("deleteStaff", { staffIdToDelete: s.id });
+          showToast(r.message || "ลบสำเร็จ");
+          await refreshAll();
+        } catch (e) {
+          showToast(e.message);
+        } finally {
+          hideLoading();
+        }
+      }
+    });
+
+    tb.appendChild(tr);
+  });
+}
+
+function resetStaffForm() {
+  $("#staffEditMode").value = "false";
+  $("#staffIdInput").disabled = false;
+  $("#staffIdInput").value = "";
+  $("#staffNameInput").value = "";
+  $("#staffPassInput").value = "";
+  $("#staffRoleInput").value = "Admin";
+}
+
+async function saveStaff(ev) {
+  ev.preventDefault();
+  if (state.session.role !== ROLES.ADMIN) return;
+
+  const isEdit = $("#staffEditMode").value === "true";
+  const id = $("#staffIdInput").value.trim();
+  const name = $("#staffNameInput").value.trim();
+  const password = $("#staffPassInput").value.trim();
+  const role = $("#staffRoleInput").value;
+
+  if (!id || !name || !password || password.length < 6) {
+    showToast("กรอกข้อมูลให้ครบ และรหัสผ่านอย่างน้อย 6 ตัวอักษร");
+    return;
+  }
+
+  showLoading(isEdit ? "กำลังอัปเดต..." : "กำลังเพิ่ม...");
+  try {
+    const action = isEdit ? "updateStaff" : "addStaff";
+    const r = await api(action, { userData: { staffId: id, name, password, role } });
+    showToast(r.message || "บันทึกสำเร็จ");
+    resetStaffForm();
+    await refreshAll();
+  } catch (e) {
+    showToast(e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+/* ---------------- Auth ---------------- */
 async function login(staffId, password) {
-  loading(true, "กำลังเข้าสู่ระบบ...");
+  showLoading("กำลังเข้าสู่ระบบ...");
   try {
-    const res = await api("login", { staffId, password });
-    state.token = res.data.token;
-    state.staff = { id: res.data.staffId, name: res.data.name, role: res.data.role };
-    saveSession();
-    return true;
+    const r = await api("verifyLogin", { staffId, password, token: null });
+    saveSession(r.data);
+    initAfterLogin();
   } catch (e) {
-    toast("Login ไม่สำเร็จ: " + e.message);
-    return false;
+    showToast(e.message);
   } finally {
-    loading(false);
+    hideLoading();
   }
+}
+
+async function initAfterLogin() {
+  $("#loginView").classList.add("hidden");
+  $("#appShell").classList.remove("hidden");
+
+  setUserBadges();
+  buildSidebar();
+  setBottomNavForRole();
+  buildAdminSheetGrid();
+
+  // admin-only buttons
+  $("#sendReportBtn").addEventListener("click", sendReport);
+  $("#sendExpirySummaryBtn").addEventListener("click", sendExpirySummary);
+
+  await refreshAll();
+
+  // default tab
+  showTab("dashboardTab");
+
+  // optional near real-time refresh (ทุก 60 วิ)
+  setInterval(() => {
+    // ไม่ force loading overlay เพื่อไม่รบกวนหน้างาน
+    api("getSnapshot", {}).then(snap => {
+      state.data.inventory = snap.data.inventory || [];
+      state.data.reorder = snap.data.reorder || [];
+      state.data.expired = snap.data.expired || [];
+      state.data.staff = snap.data.staff || [];
+      state.data.emailRecipients = snap.data.emailRecipients || [];
+      state.data.cabinets = snap.data.cabinets || [];
+      $("#lastSyncText").textContent = nowTh();
+      if (state.currentTab === "dashboardTab") renderDashboard();
+    }).catch(() => {});
+  }, 60000);
 }
 
 function logout() {
   clearSession();
-  hide($("#mainView"));
-  show($("#loginView"));
-  toast("ออกจากระบบแล้ว");
+  location.reload();
 }
 
-/* ----------------------------- Admin Sheet --------------------------- */
+/* ---------------- Events ---------------- */
+function wireEvents() {
+  setBrand();
 
-function toggleAdminSheet() {
-  const overlay = $("#adminSheetOverlay");
-  const sheet = $("#adminSheet");
-  const isHidden = sheet.classList.contains("hidden");
-  if (isHidden) { show(overlay); show(sheet); }
-  else { hide(overlay); hide(sheet); }
-}
-
-function closeAdminSheet() {
-  hide($("#adminSheetOverlay"));
-  hide($("#adminSheet"));
-}
-
-/* ------------------------------ Events ------------------------------ */
-
-function bindNavButtons() {
-  $$(".navBtn").forEach(btn => {
-    btn.addEventListener("click", () => switchRoute(btn.dataset.route));
-  });
-}
-
-function bindBottomNavButtons() {
-  $$(".bnBtn[data-route]").forEach(btn => {
-    btn.addEventListener("click", () => switchRoute(btn.dataset.route));
-  });
-}
-
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;").replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-function escapeAttr(s) { return escapeHtml(s).replaceAll('"', "&quot;"); }
-function num(x) { const n = parseInt(x || 0, 10); return isNaN(n) ? "0" : String(n); }
-
-function badge(status) {
-  const s = String(status || "");
-  const cls =
-    s.includes("หมดอายุแล้ว") ? "bg-rose-100 text-rose-800" :
-    s.includes("30") ? "bg-amber-100 text-amber-800" :
-    s.includes("60") ? "bg-yellow-100 text-yellow-800" :
-    s.includes("180") ? "bg-slate-100 text-slate-700" :
-    "bg-slate-100 text-slate-700";
-  return `<span class="px-2 py-1 rounded-lg text-xs ${cls}">${escapeHtml(s)}</span>`;
-}
-
-function expiryBadge(status, days) {
-  const s = String(status || "");
-  const d = (days === null || days === undefined) ? "" : ` (${days} วัน)`;
-  return badge(s + d);
-}
-
-/* ------------------------------- Init ------------------------------- */
-
-async function init() {
-  setLogo();
-  bindNavButtons();
-  bindBottomNavButtons();
-
-  // sidebar logout
-  $("#btnLogoutSidebar").addEventListener("click", logout);
-
-  // refresh
-  $("#btnRefresh").addEventListener("click", async () => {
-    await bootstrap();
-    toast("รีเฟรชแล้ว");
+  $("#togglePassword").addEventListener("click", () => {
+    const inp = $("#loginPassword");
+    const icon = $("#togglePassword i");
+    inp.type = inp.type === "password" ? "text" : "password";
+    icon.classList.toggle("fa-eye");
+    icon.classList.toggle("fa-eye-slash");
   });
 
-  // daily events
-  $("#dailySupplySearch").addEventListener("input", () => { state.ui.dailySupply.page = 1; renderDaily("Supply"); });
-  $("#dailySupplyCabinet").addEventListener("change", () => { state.ui.dailySupply.page = 1; renderDaily("Supply"); });
-  $("#dailySupplyPrev").addEventListener("click", () => { state.ui.dailySupply.page--; renderDaily("Supply"); });
-  $("#dailySupplyNext").addEventListener("click", () => { state.ui.dailySupply.page++; renderDaily("Supply"); });
-  $("#btnDailySupplySubmit").addEventListener("click", () => submitDaily("Supply"));
-
-  $("#dailyMedicineSearch").addEventListener("input", () => { state.ui.dailyMedicine.page = 1; renderDaily("Medicine"); });
-  $("#dailyMedicineCabinet").addEventListener("change", () => { state.ui.dailyMedicine.page = 1; renderDaily("Medicine"); });
-  $("#dailyMedicinePrev").addEventListener("click", () => { state.ui.dailyMedicine.page--; renderDaily("Medicine"); });
-  $("#dailyMedicineNext").addEventListener("click", () => { state.ui.dailyMedicine.page++; renderDaily("Medicine"); });
-  $("#btnDailyMedicineSubmit").addEventListener("click", () => submitDaily("Medicine"));
-
-  // inventory
-  $("#btnToggleInvForm").addEventListener("click", () => $("#inventoryForm").classList.toggle("hidden"));
-  $("#btnInvCancel").addEventListener("click", () => {
-    $("#inventoryForm").reset();
-    $("#invId").value = "";
-    $("#invMin").value = "5";
-    hide($("#inventoryForm"));
-  });
-  $("#inventoryForm").addEventListener("submit", upsertInventory);
-  $("#invSearch").addEventListener("input", renderInventory);
-  $("#invCabinetFilter").addEventListener("change", renderInventory);
-
-  // users
-  $("#userForm").addEventListener("submit", upsertUser);
-  $("#btnUserCancel").addEventListener("click", resetUserForm);
-
-  // report
-  $("#btnSaveRecipients").addEventListener("click", saveRecipients);
-  $("#btnSendReport").addEventListener("click", sendReport);
-
-  // settings
-  $("#btnLoadStatus").addEventListener("click", loadStatus);
-  $("#btnBackup").addEventListener("click", backupNow);
-
-  // modal
-  $("#btnCloseModal").addEventListener("click", () => hide($("#modalOverlay")));
-  $("#modalOverlay").addEventListener("click", (e) => { if (e.target === $("#modalOverlay")) hide($("#modalOverlay")); });
-  $("#btnQuickUsage").addEventListener("click", toggleQuickUsage);
-  $("#btnSubmitUsage").addEventListener("click", submitUsage);
-
-  // admin sheet toggle visibility class
-  $("#bnAdminBtn").addEventListener("click", toggleAdminSheet);
-  $("#btnCloseAdminSheet").addEventListener("click", closeAdminSheet);
-  $("#adminSheetOverlay").addEventListener("click", closeAdminSheet);
-
-  $$(".adminSheetBtn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      closeAdminSheet();
-      switchRoute(btn.dataset.route);
-    });
+  $("#loginForm").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    login($("#loginStaffId").value.trim(), $("#loginPassword").value.trim());
   });
 
-  // login form
-  $("#loginForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const staffId = $("#loginStaffId").value.trim();
-    const password = $("#loginPassword").value;
-    const ok = await login(staffId, password);
-    if (!ok) return;
-    hide($("#loginView"));
-    show($("#mainView"));
-    $("#sidebarUserMeta").textContent = `${state.staff.name} (${state.staff.role})`;
+  $("#logoutBtnDesktop").addEventListener("click", logout);
+  $("#logoutBtnMobile2").addEventListener("click", logout);
 
-    await bootstrap();
-    toast("เข้าสู่ระบบสำเร็จ");
+  $("#refreshBtnDesktop").addEventListener("click", refreshAll);
+  $("#refreshBtnMobile").addEventListener("click", refreshAll);
+
+  // Bottom nav
+  $$("[data-bottom-tab]").forEach(btn => {
+    btn.addEventListener("click", () => showTab(btn.dataset.bottomTab));
   });
+
+  // Admin sheet
+  $("#adminFab").addEventListener("click", () => {
+    if (state.session?.role !== ROLES.ADMIN) return;
+    openAdminSheet();
+  });
+  $("#adminSheetClose").addEventListener("click", closeAdminSheet);
+  $("#adminSheetBackdrop").addEventListener("click", closeAdminSheet);
+
+  // Item modals
+  $("#itemModalClose").addEventListener("click", closeItemModal);
+  $("#itemModalBackdrop").addEventListener("click", closeItemModal);
+
+  $("#openAddItemBtn").addEventListener("click", openAddItem);
+  $("#itemEditClose").addEventListener("click", closeItemEditModal);
+  $("#itemEditBackdrop").addEventListener("click", closeItemEditModal);
+  $("#itemFormCancel").addEventListener("click", closeItemEditModal);
+  $("#itemForm").addEventListener("submit", saveItem);
+
+  // Inventory filters
+  $("#inventorySearch").addEventListener("input", () => renderInventory());
+  $("#inventoryCabinet").addEventListener("change", () => renderInventory());
+  $("#inventoryCategory").addEventListener("change", () => renderInventory());
+
+  // Daily search
+  $("#dailySupplySearch").addEventListener("input", () => renderDaily("supply"));
+  $("#dailySupplyCabinet").addEventListener("change", () => renderDaily("supply"));
+  $("#dailyMedicineSearch").addEventListener("input", () => renderDaily("medicine"));
+  $("#dailyMedicineCabinet").addEventListener("change", () => renderDaily("medicine"));
+
+  $("#saveDailySupplyBtn").addEventListener("click", () => saveDaily("supply"));
+  $("#saveDailyMedicineBtn").addEventListener("click", () => saveDaily("medicine"));
+
+  // Staff
+  $("#staffForm").addEventListener("submit", saveStaff);
+  $("#staffFormReset").addEventListener("click", resetStaffForm);
+}
+
+(async function boot() {
+  wireEvents();
 
   // restore session
-  loadSession();
-  if (state.token) {
-    hide($("#loginView"));
-    show($("#mainView"));
-    $("#sidebarUserMeta").textContent = `${state.staff.name} (${state.staff.role})`;
+  const sess = loadSession();
+  if (sess?.token && sess?.staffId) {
+    state.session = sess;
     try {
-      await bootstrap();
-    } catch (_) {
-      // token expired
-      logout();
+      // quick validate token (optional)
+      await api("ping", {});
+      initAfterLogin();
+    } catch {
+      clearSession();
     }
   }
-
-  // poll last updated for near real-time
-  setInterval(pollLastUpdated, 30000);
-}
-
-document.addEventListener("DOMContentLoaded", init);
+})();
