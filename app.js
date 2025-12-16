@@ -1,4 +1,5 @@
 /* ICU Stock Management - GitHub Pages Frontend (Tailwind)
+ * FIXED: auto-inject staffId/role into payload for all actions after login
  * - POST simple request: Content-Type: text/plain;charset=utf-8
  * - Toggle visibility via class "hidden"
  */
@@ -6,7 +7,7 @@
 (() => {
   const CFG = window.APP_CONFIG || {};
   const APP_NAME = CFG.APP_NAME || "ICU Stock Management";
-  const API_BASE_URL = CFG.API_BASE_URL || "https://script.google.com/macros/s/AKfycbxk8YusmqCrn0fcPITsHYS_9UIYu9mdT-3R-pKjDyOy8R3TuLekUW0akCm0iWd_X_kcuA/exec";
+  const API_BASE_URL = CFG.API_BASE_URL || "<PUT_WEB_APP_EXEC_URL_HERE>";
   const LOCALE = CFG.LOCALE || "th-TH";
   const TIMEZONE = CFG.TIMEZONE || "Asia/Bangkok";
   const LOGO_URL = CFG.LOGO_URL || "https://lh5.googleusercontent.com/d/1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO";
@@ -180,15 +181,25 @@
     return ""; // Admin = all
   }
 
-  // ---------- API Client ----------
+  // ---------- API Client (FIXED) ----------
   async function apiCall(action, payload = {}, opts = {}) {
     const timeoutMs = opts.timeoutMs ?? 15000;
     const retries = opts.retries ?? 1;
 
     const requestId = uuid();
+
+    // FIX: auto-inject auth context for all actions after login
+    const NO_AUTH_ACTIONS = new Set(["verifyLogin"]); // extend if needed
+    let finalPayload = payload;
+
+    if (!NO_AUTH_ACTIONS.has(action) && state.user && finalPayload && typeof finalPayload === "object" && !Array.isArray(finalPayload)) {
+      if (!("staffId" in finalPayload)) finalPayload = { ...finalPayload, staffId: state.user.staffId };
+      if (!("role" in finalPayload)) finalPayload = { ...finalPayload, role: state.user.role };
+    }
+
     const bodyObj = {
       action,
-      payload,
+      payload: finalPayload,
       requestId,
       clientTime: nowISO(),
     };
@@ -202,9 +213,7 @@
       try {
         const res = await fetch(API_BASE_URL, {
           method: "POST",
-          headers: {
-            "Content-Type": "text/plain;charset=utf-8",
-          },
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
           body: JSON.stringify(bodyObj),
           signal: controller.signal,
         });
@@ -215,7 +224,7 @@
           json = JSON.parse(raw);
         } catch (e) {
           const msg = [
-            `Invalid JSON response`,
+            "Invalid JSON response",
             `HTTP ${res.status}`,
             `action=${action}`,
             `requestId=${requestId}`,
@@ -224,7 +233,6 @@
           throw new Error(msg);
         }
 
-        // normalize envelope expectation
         json.action = json.action || action;
         json.requestId = json.requestId || requestId;
 
@@ -233,8 +241,9 @@
         }
 
         if (json.success === false) {
-          const err = json.error || "Unknown error";
-          throw new Error(`${err}\nrequestId=${json.requestId}`);
+          const err = json.error || "REQUEST_FAILED";
+          const details = json.details ? `\ndetails=${JSON.stringify(json.details)}` : "";
+          throw new Error(`${err} requestId=${json.requestId}${details}`);
         }
 
         return json;
@@ -250,7 +259,6 @@
           continue;
         }
 
-        // CORS guidance
         if (isNetwork) {
           throw new Error(
             [
@@ -273,7 +281,7 @@
       }
     }
 
-    throw lastErr || new Error("Unknown error");
+    throw lastErr || new Error("REQUEST_FAILED");
   }
 
   async function apiPing() {
@@ -336,7 +344,6 @@
   }
 
   function renderBottomNav() {
-    // show/hide center admin button
     setVisible(adminCenterBtn, roleIsAdmin());
   }
 
@@ -345,7 +352,6 @@
     views.forEach((k) => setVisible($(`view_${k}`), k === key));
     activeViewBadge.textContent = key;
 
-    // update title
     const titleMap = {
       home: "Dashboard",
       inventory: "Inventory",
@@ -354,9 +360,9 @@
       profile: "Profile",
       admin: "Admin Console",
     };
-    document.querySelector("header .text-lg.font-semibold").textContent = titleMap[key] || "Dashboard";
+    const t = document.querySelector("header .text-lg.font-semibold");
+    if (t) t.textContent = titleMap[key] || "Dashboard";
 
-    // trigger load per view (lightweight)
     if (key === "inventory") void refreshInventory();
     if (key === "daily") void refreshDaily();
     if (key === "usage") void refreshUsage();
@@ -443,9 +449,7 @@
 
     let items = [...state.inventory];
 
-    // UI hint filter (backend must enforce)
     if (catLimit) items = items.filter(x => safeText(x.category) === catLimit);
-
     if (cabinet) items = items.filter(x => safeText(x.cabinet) === cabinet);
 
     if (q) {
@@ -554,11 +558,7 @@
     try {
       showLoading("Loading system status...");
       const res = await apiCall("getSystemStatus", {}, { retries: 1 });
-      systemStatus.textContent = "OK";
-      // show a compact view if server provides data
-      if (res.data) {
-        systemStatus.textContent = safeText(res.data.status || "OK");
-      }
+      systemStatus.textContent = safeText(res.data?.status || "OK");
     } catch (e) {
       systemStatus.textContent = "ERROR";
       setMessageBar("error", e.message);
@@ -576,7 +576,6 @@
       const list = Array.isArray(res.data) ? res.data : (res.data?.cabinets || []);
       state.cabinets = (list || []).filter(Boolean);
     } catch {
-      // fallback: derive from inventory
       const set = new Set(state.inventory.map(x => safeText(x.cabinet)).filter(Boolean));
       state.cabinets = [...set];
     }
@@ -589,7 +588,6 @@
     try {
       showLoading("Loading inventory...");
       const res = await apiCall("loadInventory", {}, { retries: 1 });
-      // Expect array of rows; normalize keys if needed
       const rows = Array.isArray(res.data) ? res.data : [];
       state.inventory = rows.map(normalizeInventoryRow);
       inventoryCount.textContent = `${state.inventory.length} items`;
@@ -605,7 +603,6 @@
   }
 
   function normalizeInventoryRow(r) {
-    // Accept multiple shapes; map into consistent keys used by UI
     return {
       itemName: r.itemName ?? r["รายการ"] ?? r.item ?? "",
       lotNo: r.lotNo ?? r["Lot No"] ?? r.lot ?? "",
@@ -624,13 +621,9 @@
       ? `สิทธิ์ของคุณ: ตรวจเฉพาะ Category="${roleDailyCategory()}"`
       : `สิทธิ์ของคุณ: ตรวจได้ทุก Category`;
 
-    // set default date
     if (!dailyDate.value) dailyDate.valueAsDate = new Date();
-
-    // shift default
     if (!dailyShift.value) dailyShift.value = "เช้า";
 
-    // Ensure inventory loaded
     if (!state.inventory.length) await refreshInventory();
     await refreshCabinets();
     renderDaily();
@@ -688,7 +681,6 @@
   }
 
   function parseCsv(text) {
-    // minimal CSV parser for quoted fields
     const rows = [];
     let i = 0, field = "", row = [], inQuotes = false;
 
@@ -714,14 +706,13 @@
   }
 
   function tryNormalizeExpiry(s) {
-    // accept YYYY-MM-DD or DD/MM/YYYY
     if (!s) return "";
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
     if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
       const [d,m,y] = s.split("/");
       return `${y}-${m}-${d}`;
     }
-    return s; // keep as-is; backend may handle
+    return s;
   }
 
   async function importInventoryCsv(file) {
@@ -737,7 +728,6 @@
       if (idx(h) < 0) throw new Error(`CSV header ขาดคอลัมน์: ${h}`);
     }
 
-    // import sequentially to avoid rate limits
     let ok = 0;
     for (let r = 1; r < rows.length; r++) {
       const line = rows[r];
@@ -752,21 +742,15 @@
         category: line[idx("Category")]?.trim() || "",
       };
 
-      // basic sanity
       if (!itemData.itemName || !itemData.lotNo) continue;
 
       showLoading(`Importing... (${r}/${rows.length - 1})`);
-      await apiCall("saveInventoryItem", {
-        itemData,
-        staffId: state.user.staffId,
-        role: state.user.role
-      }, { retries: 1, timeoutMs: 20000 });
-
+      await apiCall("saveInventoryItem", { itemData }, { retries: 1, timeoutMs: 20000 });
       ok++;
     }
 
     hideLoading();
-    showModal("Import CSV", `นำเข้าเสร็จสิ้น: ${ok} รายการ\n(ถ้าระบบมี rule duplicate ใน backend จะเป็นตัวตัดสินผลลัพธ์)`);
+    showModal("Import CSV", `นำเข้าเสร็จสิ้น: ${ok} รายการ`);
     await refreshInventory();
   }
 
@@ -788,7 +772,6 @@
         const lot = el.dataset.lot || "";
         const qty = Number(el.value || 0);
         const status = statusMap.get(`${item}||${lot}`) || "OK";
-        // only submit lines user touched (qty > 0) to reduce noise
         if (qty <= 0) continue;
 
         checks.push({
@@ -807,12 +790,7 @@
       }
 
       showLoading("Submitting daily check...");
-      const res = await apiCall("saveDailyCheck", {
-        checkDataArray: checks,
-        staffId: state.user.staffId,
-        role: state.user.role
-      }, { retries: 1, timeoutMs: 25000 });
-
+      const res = await apiCall("saveDailyCheck", { checkDataArray: checks }, { retries: 1, timeoutMs: 25000 });
       hideLoading();
       showModal("Daily Check", `บันทึกสำเร็จ\nrequestId=${res.requestId || "-"}`);
     } catch (e) {
@@ -834,9 +812,7 @@
 
     try {
       showLoading(`Running ${action}...`);
-      const payload = { staffId: state.user.staffId, role: state.user.role };
-
-      const res = await apiCall(action, payload, { retries: 1, timeoutMs: 30000 });
+      const res = await apiCall(action, {}, { retries: 1, timeoutMs: 30000 });
       setAdminOutput(res);
       showModal("Admin", `สำเร็จ: ${action}\nrequestId=${res.requestId || "-"}`);
     } catch (e) {
@@ -851,7 +827,6 @@
   function openAdminSheet() {
     if (!roleIsAdmin()) return;
     setVisible(adminSheetBackdrop, true);
-    // animate up
     requestAnimationFrame(() => {
       adminSheetPanel.classList.remove("translate-y-full");
       adminSheetPanel.classList.add("translate-y-0");
@@ -872,7 +847,6 @@
     showLoading("Signing in...");
     try {
       const res = await apiCall("verifyLogin", { staffId, password }, { retries: 1, timeoutMs: 20000 });
-      // expected: res.data = { staffId, name, role }
       const d = res.data || {};
       const user = {
         staffId: d.staffId || staffId,
@@ -906,7 +880,6 @@
   }
 
   async function enterApp() {
-    // logos + names
     loginAppName.textContent = APP_NAME;
     appName.textContent = APP_NAME;
 
@@ -916,23 +889,18 @@
     userBadge.textContent = `${state.user.name || "-"} (${state.user.staffId || "-"}) • ${state.user.role || "-"}`;
     topUserInfo.textContent = userBadge.textContent;
 
-    // role-based UI
     renderSidebarNav();
     renderBottomNav();
 
-    // show app
     setVisible(loginView, false);
     setVisible(appShell, true);
 
-    // admin-only view access
     if (!roleIsAdmin()) setVisible($("view_admin"), false);
 
-    // initial loads
     await refreshInventory();
     await refreshHome();
     setView("home");
 
-    // daily hint
     dailyRoleHint.textContent = roleDailyCategory()
       ? `สิทธิ์ของคุณ: ตรวจเฉพาะ Category="${roleDailyCategory()}"`
       : `สิทธิ์ของคุณ: ตรวจได้ทุก Category`;
@@ -940,7 +908,6 @@
 
   // ---------- Events ----------
   function bindEvents() {
-    // password toggle
     togglePasswordBtn.addEventListener("click", () => {
       const isPw = loginPassword.type === "password";
       loginPassword.type = isPw ? "text" : "password";
@@ -952,7 +919,7 @@
     loginForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const staffId = loginStaffId.value.trim();
-      const password = loginPassword.value; // do not log
+      const password = loginPassword.value;
       if (!staffId || !password) {
         showModal("Login", "กรุณากรอก StaffID และ Password");
         return;
@@ -961,26 +928,22 @@
     });
 
     initSheetsBtn.addEventListener("click", async () => {
-      // allow calling initializeSheets even before login (optional)
-      showModal("Initialize Sheets", "แนะนำให้ทำผ่าน Admin หลัง login\nถ้าต้องการทำตอนนี้ ให้ login ด้วย Admin ก่อน");
+      showModal("Initialize Sheets", "แนะนำให้ทำผ่าน Admin หลัง login");
     });
 
     logoutBtnDesktop.addEventListener("click", logout);
     logoutBtnMobileTop.addEventListener("click", logout);
 
-    // bottom nav
     bottomNav.querySelectorAll("[data-nav]").forEach(btn => {
       btn.addEventListener("click", () => setView(btn.dataset.nav));
     });
 
-    // admin center button + sheet
     adminCenterBtn.addEventListener("click", () => {
       state.isAdminSheetOpen ? closeAdminSheet() : openAdminSheet();
     });
     closeAdminSheetBtn.addEventListener("click", closeAdminSheet);
     adminSheetDim.addEventListener("click", closeAdminSheet);
 
-    // sheet admin actions
     adminSheetBackdrop.querySelectorAll("[data-admin-action]").forEach(btn => {
       btn.addEventListener("click", async () => {
         closeAdminSheet();
@@ -988,7 +951,6 @@
       });
     });
 
-    // admin console buttons
     document.querySelectorAll(".adminBtn").forEach(btn => {
       btn.classList.add(
         "rounded-xl", "border", "border-slate-800", "bg-slate-950/60",
@@ -997,7 +959,6 @@
       btn.addEventListener("click", async () => runAdminAction(btn.dataset.adminAction));
     });
 
-    // inventory controls
     refreshInventoryBtn.addEventListener("click", refreshInventory);
     invSearch.addEventListener("input", renderInventory);
     invCabinetFilter.addEventListener("change", renderInventory);
@@ -1029,16 +990,13 @@
       }
     });
 
-    // daily controls
     refreshDailyBtn.addEventListener("click", refreshDaily);
     dailySearch.addEventListener("input", renderDaily);
     dailyCabinetFilter.addEventListener("change", renderDaily);
     submitDailyBtn.addEventListener("click", submitDaily);
 
-    // usage
     refreshUsageBtn.addEventListener("click", refreshUsage);
 
-    // escape closes admin sheet
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         if (!modalBackdrop.classList.contains("hidden")) hideModal();
@@ -1049,13 +1007,11 @@
 
   // ---------- Boot ----------
   async function boot() {
-    // logo init
     loginLogo.src = LOGO_URL;
     appLogo.src = LOGO_URL;
     loginAppName.textContent = APP_NAME;
     appName.textContent = APP_NAME;
 
-    // ping badge (non-blocking)
     const ping = await apiPing();
     apiStatusBadge.textContent = ping.ok ? "API: OK" : "API: ERROR";
     apiStatusBadge.className = ping.ok
