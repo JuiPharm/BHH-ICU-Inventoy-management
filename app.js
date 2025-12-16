@@ -1,1003 +1,1248 @@
-/**
- * ICU Stock Management - Frontend Application
- * Complete JavaScript with API client and UI management
+/* ICU Stock Management — GitHub Pages SPA (Vanilla JS)
+ * - fetch POST text/plain;charset=utf-8 to Apps Script Web App
+ * - timeout + retry
+ * - sessionStorage state
  */
 
-// ==================== CONFIGURATION ====================
-const CONFIG = {
-    // IMPORTANT: Replace this with your actual Google Apps Script Web App URL
-    API_BASE_URL: "https://script.google.com/macros/s/AKfycbxk8YusmqCrn0fcPITsHYS_9UIYu9mdT-3R-pKjDyOy8R3TuLekUW0akCm0iWd_X_kcuA/exec", // e.g., "https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec"
-    
-    // Application settings
-    APP_NAME: "ICU Stock Management",
-    TIMEOUT: 30000, // 30 seconds
-    MAX_RETRIES: 2,
-    
-    // Role definitions
-    ROLES: {
-        ADMIN: "Admin",
-        RN: "RN",
-        PN: "PN"
-    }
+const APP_NAME = "ICU Stock Management";
+const TIMEZONE = "Asia/Bangkok";
+const LOCALE = "th-TH";
+const API_BASE_URL = (window.API_BASE_URL && String(window.API_BASE_URL)) || "<PUT_WEB_APP_EXEC_URL_HERE>";
+
+const sessionKeys = {
+  staffId: "icu_staffId",
+  staffName: "icu_staffName",
+  role: "icu_role"
 };
 
-// ==================== GLOBAL STATE ====================
-let currentUser = null;
-let currentTab = 'inventory';
-let inventoryData = [];
-let staffData = [];
+const state = {
+  staffId: "",
+  staffName: "",
+  role: "",
+  activeTab: "inventory",
+  inventory: [],
+  cabinets: []
+};
 
-// ==================== UTILITY FUNCTIONS ====================
+const el = (id) => document.getElementById(id);
 
-function generateId() {
-    return uuid.v4();
+function setLoading(on) {
+  el("loadingOverlay").hidden = !on;
 }
 
-function formatDate(dateString) {
-    if (!dateString) return '';
-    const date = new Date(dateString);
-    return date.toLocaleDateString('th-TH');
+function showMsg(title, bodyHtml) {
+  el("msgTitle").textContent = title;
+  el("msgBody").innerHTML = bodyHtml;
+  el("msgModal").hidden = false;
 }
 
-function formatDateInput(date) {
-    if (!date) return '';
-    const d = new Date(date);
-    return d.toISOString().split('T')[0];
+function hideMsg() {
+  el("msgModal").hidden = true;
 }
 
-function showLoading(show = true) {
-    const overlay = document.getElementById('loadingOverlay');
-    overlay.style.display = show ? 'flex' : 'none';
+function uuidv4() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
 
-function showMessage(title, message, type = 'info') {
-    const messageBox = document.getElementById('messageBox');
-    const icon = messageBox.querySelector('.message-icon');
-    const titleEl = messageBox.querySelector('.message-title');
-    const bodyEl = messageBox.querySelector('.message-body');
-    
-    // Set icon based on type
-    icon.className = 'message-icon';
-    switch (type) {
-        case 'success':
-            icon.classList.add('fas', 'fa-check-circle');
-            break;
-        case 'error':
-            icon.classList.add('fas', 'fa-exclamation-circle');
-            break;
-        case 'warning':
-            icon.classList.add('fas', 'fa-exclamation-triangle');
-            break;
-        default:
-            icon.classList.add('fas', 'fa-info-circle');
-    }
-    
-    titleEl.textContent = title;
-    bodyEl.textContent = message;
-    
-    messageBox.className = `message-box ${type}`;
-    messageBox.style.display = 'flex';
-    
-    // Auto hide after 5 seconds
-    setTimeout(() => {
-        hideMessage();
-    }, 5000);
+function formatDisplayDate(ymd) {
+  // ymd -> DD/MM/YYYY (Gregorian)
+  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd || "";
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dd = String(d).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return `${dd}/${mm}/${y}`;
 }
 
-function hideMessage() {
-    document.getElementById('messageBox').style.display = 'none';
+function todayYmd() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${da}`;
 }
 
-function setCookie(name, value, days) {
-    const expires = new Date();
-    expires.setTime(expires.getTime() + (days * 24 * 60 * 60 * 1000));
-    document.cookie = `${name}=${value};expires=${expires.toUTCString()};path=/`;
-}
+/** =========================
+ * API CLIENT (timeout + retry)
+ * ========================= */
+async function apiCall(action, payload = {}, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 15000;
+  const retries = opts.retries ?? 1;
 
-function getCookie(name) {
-    const nameEQ = name + "=";
-    const ca = document.cookie.split(';');
-    for (let i = 0; i < ca.length; i++) {
-        let c = ca[i];
-        while (c.charAt(0) === ' ') c = c.substring(1, c.length);
-        if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
-    }
-    return null;
-}
+  const requestId = uuidv4();
+  const clientTime = new Date().toISOString();
 
-// ==================== API CLIENT ====================
+  const body = JSON.stringify({
+    action,
+    payload,
+    requestId,
+    clientTime
+  });
 
-async function apiCall(action, payload = {}, retries = 0) {
-    const requestId = generateId();
-    const clientTime = new Date().toISOString();
-    
-    const requestBody = {
-        action,
-        payload,
-        requestId,
-        clientTime
-    };
-    
+  let lastErr = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-        console.log(`API Call: ${action} (Request ID: ${requestId})`);
-        
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), CONFIG.TIMEOUT);
-        
-        const response = await fetch(CONFIG.API_BASE_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'text/plain;charset=utf-8',
-            },
-            body: JSON.stringify(requestBody),
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        
-        if (!data.success) {
-            throw new Error(data.error || 'API request failed');
-        }
-        
-        console.log(`API Success: ${action} (Request ID: ${requestId})`);
-        return data;
-        
-    } catch (error) {
-        console.error(`API Error: ${action} (Request ID: ${requestId})`, error);
-        
-        // Retry on network errors
-        if (retries < CONFIG.MAX_RETRIES && (error.name === 'AbortError' || error.message.includes('Network'))) {
-            console.log(`Retrying ${action} (attempt ${retries + 1}/${CONFIG.MAX_RETRIES})`);
-            await new Promise(resolve => setTimeout(resolve, 1000 * (retries + 1)));
-            return apiCall(action, payload, retries + 1);
-        }
-        
-        // Format error message for user
-        let errorMessage = 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้';
-        if (error.name === 'AbortError') {
-            errorMessage = 'การเชื่อมต่อหมดเวลา กรุณาลองใหม่อีกครั้ง';
-        } else if (error.message.includes('Network')) {
-            errorMessage = 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ กรุณาตรวจสัญญาณอินเทอร์เน็ต';
-        } else if (error.message) {
-            errorMessage = error.message;
-        }
-        
-        throw new Error(`${errorMessage} (Request ID: ${requestId})`);
-    }
-}
+      const res = await fetch(API_BASE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body,
+        signal: controller.signal
+      });
 
-// ==================== AUTHENTICATION ====================
+      const text = await res.text();
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch (e) {
+        throw new Error(
+          `Response is not valid JSON. HTTP ${res.status}. ` +
+          `This is often a CORS / deployment issue.\n\n` +
+          `Raw response (first 300 chars):\n${text.slice(0, 300)}`
+        );
+      }
 
-async function login() {
-    const staffId = document.getElementById('staffId').value.trim();
-    const password = document.getElementById('password').value;
-    
-    if (!staffId || !password) {
-        showMessage('กรุณากรอกข้อมูล', 'กรุณากรอกรหัสพนักงานและรหัสผ่าน', 'warning');
-        return;
-    }
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('verifyLogin', { staffId, password });
-        
-        if (response.success) {
-            currentUser = response.data;
-            
-            // Save session
-            sessionStorage.setItem('currentUser', JSON.stringify(currentUser));
-            
-            // Update UI
-            updateUserInfo();
-            showMainScreen();
-            
-            // Load initial data
-            await Promise.all([
-                loadInventory(),
-                loadReorderItems(),
-                loadExpiredItems()
-            ]);
-            
-            showMessage('เข้าสู่ระบบสำเร็จ', `ยินดีต้อนรับ ${currentUser.name}`, 'success');
-        } else {
-            showMessage('เข้าสู่ระบบไม่สำเร็จ', response.error || 'รหัสพนักงานหรือรหัสผ่านไม่ถูกต้อง', 'error');
-        }
-    } catch (error) {
-        showMessage('เกิดข้อผิดพลาด', error.message, 'error');
+      if (!json || typeof json.success !== "boolean") {
+        throw new Error("Malformed API envelope. Missing success field.");
+      }
+
+      if (!json.success) {
+        const rid = json.requestId ? ` (requestId: ${json.requestId})` : "";
+        const err = json.error || "ERROR";
+        const details = json.details ? `<pre class="pre">${escapeHtml(JSON.stringify(json.details, null, 2))}</pre>` : "";
+        const msg = `API error: ${escapeHtml(err)}${rid}${details}`;
+        const e2 = new Error(msg);
+        e2._api = json;
+        throw e2;
+      }
+
+      return json;
+    } catch (err) {
+      lastErr = err;
+
+      // Retry only for network/timeout-like failures
+      const isAbort = (err && err.name === "AbortError");
+      const isNetwork = (err && String(err.message || "").toLowerCase().includes("failed to fetch"));
+      const shouldRetry = attempt < retries && (isAbort || isNetwork);
+
+      if (shouldRetry) {
+        await sleep(500 * (attempt + 1));
+        continue;
+      }
+
+      // add requestId to thrown errors
+      err.requestId = requestId;
+      throw err;
     } finally {
-        showLoading(false);
+      clearTimeout(timer);
     }
+  }
+
+  throw lastErr || new Error("Unknown API error");
 }
 
-function logout() {
-    currentUser = null;
-    sessionStorage.removeItem('currentUser');
-    
-    // Clear form
-    document.getElementById('staffId').value = '';
-    document.getElementById('password').value = '';
-    
-    // Show login screen
-    showLoginScreen();
-    
-    showMessage('ออกจากระบบ', 'คุณได้ออกจากระบบเรียบร้อยแล้ว', 'info');
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
-function checkSession() {
-    const savedUser = sessionStorage.getItem('currentUser');
-    if (savedUser) {
-        try {
-            currentUser = JSON.parse(savedUser);
-            updateUserInfo();
-            showMainScreen();
-            return true;
-        } catch (e) {
-            sessionStorage.removeItem('currentUser');
-        }
-    }
-    return false;
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
 }
 
-function updateUserInfo() {
-    if (currentUser) {
-        document.getElementById('userName').textContent = currentUser.name;
-        document.getElementById('userRole').textContent = currentUser.role;
-        document.getElementById('userRole').className = `role-badge ${currentUser.role.toLowerCase()}`;
-        
-        // Show admin tabs if user is admin
-        if (currentUser.role === CONFIG.ROLES.ADMIN) {
-            document.querySelectorAll('.admin-only').forEach(el => {
-                el.style.display = 'block';
-            });
-        }
-    }
+/** =========================
+ * SESSION
+ * ========================= */
+function loadSession() {
+  state.staffId = sessionStorage.getItem(sessionKeys.staffId) || "";
+  state.staffName = sessionStorage.getItem(sessionKeys.staffName) || "";
+  state.role = sessionStorage.getItem(sessionKeys.role) || "";
 }
 
-function togglePassword() {
-    const passwordInput = document.getElementById('password');
-    const icon = passwordInput.nextElementSibling.querySelector('i');
-    
-    if (passwordInput.type === 'password') {
-        passwordInput.type = 'text';
-        icon.classList.remove('fa-eye');
-        icon.classList.add('fa-eye-slash');
+function saveSession(staffId, staffName, role) {
+  sessionStorage.setItem(sessionKeys.staffId, staffId);
+  sessionStorage.setItem(sessionKeys.staffName, staffName);
+  sessionStorage.setItem(sessionKeys.role, role);
+  loadSession();
+}
+
+function clearSession() {
+  sessionStorage.removeItem(sessionKeys.staffId);
+  sessionStorage.removeItem(sessionKeys.staffName);
+  sessionStorage.removeItem(sessionKeys.role);
+  loadSession();
+}
+
+/** =========================
+ * RESPONSIVE NAV (BottomNav + ActionSheet)
+ * - Toggle Visibility Class via hidden property + class toggles
+ * ========================= */
+function isAdmin_() {
+  return state.role === "Admin";
+}
+
+function openSheet_() {
+  const s = el("actionSheet");
+  if (!s) return;
+  s.hidden = false;
+}
+
+function closeSheet_() {
+  const s = el("actionSheet");
+  if (!s) return;
+  s.hidden = true;
+}
+
+function toggleSheet_() {
+  const s = el("actionSheet");
+  if (!s) return;
+  s.hidden ? openSheet_() : closeSheet_();
+}
+
+function updateRoleBasedNav_() {
+  // bottom nav visibility per role
+  const navMenu = el("navMenu");
+  const sheetAdminBtn = el("sheetAdminBtn");
+
+  if (navMenu) navMenu.hidden = !isAdmin_();
+  if (sheetAdminBtn) sheetAdminBtn.hidden = !isAdmin_();
+}
+
+function setNavActive_() {
+  const ids = ["navHome", "navInventory", "navDaily", "navUsage", "navMenu"];
+  ids.forEach(id => {
+    const b = el(id);
+    if (!b) return;
+    b.classList.remove("is-active");
+  });
+
+  // Highlight logic:
+  // - inventory => highlight Inventory
+  // - daily => highlight Daily
+  // - usage => highlight Usage
+  // - reorder/expired/shift/admin => highlight Menu (if admin) else Inventory
+  const tab = state.activeTab;
+  if (tab === "inventory") el("navInventory")?.classList.add("is-active");
+  else if (tab === "daily") el("navDaily")?.classList.add("is-active");
+  else if (tab === "usage") el("navUsage")?.classList.add("is-active");
+  else if (["reorder","expired","shift","admin"].includes(tab)) {
+    if (isAdmin_()) el("navMenu")?.classList.add("is-active");
+    else el("navInventory")?.classList.add("is-active");
+  }
+}
+
+function navigateTo_(tabId) {
+  state.activeTab = tabId;
+  closeSheet_();
+  buildTabs();
+  setNavActive_();
+  return renderActiveTab();
+}
+
+/** =========================
+ * UI BOOT
+ * ========================= */
+function setLoggedInUI(on) {
+  el("loginView").hidden = on;
+  el("appView").hidden = !on;
+  el("userBox").hidden = !on;
+
+  // NEW: Show/hide sidebar + bottom nav
+  const sb = el("sidebar");
+  const bn = el("bottomNav");
+  if (sb) sb.hidden = !on;
+  if (bn) bn.hidden = !on;
+
+  if (!on) closeSheet_();
+
+  if (on) {
+    el("userName").textContent = state.staffName || state.staffId;
+    el("userRole").textContent = state.role || "";
+  }
+
+  updateRoleBasedNav_();
+  setNavActive_();
+}
+
+function buildTabs() {
+  const tabs = [
+    { id: "inventory", label: "Inventory" },
+    { id: "daily", label: "Daily Check" },
+    { id: "reorder", label: "Reorder" },
+    { id: "expired", label: "Expired" },
+    { id: "shift", label: "Shift Summary" },
+    { id: "usage", label: "Usage" }
+  ];
+
+  if (state.role === "Admin") {
+    tabs.push({ id: "admin", label: "Report / Settings" });
+  }
+
+  const container = el("tabs");
+  container.innerHTML = "";
+  tabs.forEach(t => {
+    const b = document.createElement("button");
+    b.className = "tab" + (state.activeTab === t.id ? " active" : "");
+    b.textContent = t.label;
+    b.onclick = () => navigateTo_(t.id);
+    container.appendChild(b);
+  });
+
+  setNavActive_();
+}
+
+function setPanelTitle(title) {
+  el("panelTitle").textContent = title;
+}
+
+function setPanelActions(nodes) {
+  const pa = el("panelActions");
+  pa.innerHTML = "";
+  (nodes || []).forEach(n => pa.appendChild(n));
+}
+
+function setPanelBody(html) {
+  el("panelBody").innerHTML = html;
+}
+
+/** =========================
+ * LOGIN FLOW
+ * ========================= */
+async function onLogin() {
+  const staffId = el("loginStaffId").value.trim();
+  const password = el("loginPassword").value;
+
+  if (!staffId || !password) {
+    showMsg("Login", "กรุณากรอก StaffID และ Password");
+    return;
+  }
+
+  setLoading(true);
+  try {
+    const res = await apiCall("verifyLogin", { staffId, password }, { timeoutMs: 15000, retries: 1 });
+    const data = res.data;
+    saveSession(data.staffId, data.staffName, data.role);
+
+    setLoggedInUI(true);
+    buildTabs();
+    await primeData();
+    await renderActiveTab();
+  } catch (err) {
+    showMsg("Login failed", `<div class="error">${escapeHtml(err.message || String(err))}</div>`);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onFirstTimeInit() {
+  setLoading(true);
+  el("loginInfo").hidden = true;
+  try {
+    const res = await apiCall("initializeSheets", {}, { timeoutMs: 30000, retries: 0 });
+    const b = [];
+    b.push(`<div class="ok">Initialize complete.</div>`);
+    if (res.data && res.data.bootstrapAdmin && res.data.bootstrapAdmin.created) {
+      b.push(
+        `<div class="warn"><b>Default Admin Created</b><br/>` +
+        `StaffID: <b>${escapeHtml(res.data.bootstrapAdmin.staffId)}</b><br/>` +
+        `Password: <b>${escapeHtml(res.data.bootstrapAdmin.password)}</b><br/>` +
+        `${escapeHtml(res.data.bootstrapAdmin.note || "")}</div>`
+      );
     } else {
-        passwordInput.type = 'password';
-        icon.classList.remove('fa-eye-slash');
-        icon.classList.add('fa-eye');
+      b.push(`<div class="info">Sheets created/ensured. If Staff already exists, please login with existing Admin.</div>`);
     }
+    el("loginInfo").innerHTML = b.join("");
+    el("loginInfo").hidden = false;
+  } catch (err) {
+    el("loginInfo").innerHTML = `<div class="error">${escapeHtml(err.message || String(err))}</div>`;
+    el("loginInfo").hidden = false;
+  } finally {
+    setLoading(false);
+  }
 }
 
-// ==================== UI NAVIGATION ====================
-
-function showLoginScreen() {
-    document.getElementById('loginScreen').classList.add('active');
-    document.getElementById('mainScreen').classList.remove('active');
+/** =========================
+ * DATA PRIMING
+ * ========================= */
+async function primeData() {
+  // Prime cabinet list + inventory cache
+  await refreshCabinets();
+  await refreshInventory();
 }
 
-function showMainScreen() {
-    document.getElementById('loginScreen').classList.remove('active');
-    document.getElementById('mainScreen').classList.add('active');
-    
-    // Set today's date as default
-    document.getElementById('checkDate').value = formatDateInput(new Date());
-    document.getElementById('usageDate').value = formatDateInput(new Date());
+async function refreshInventory() {
+  const res = await apiCall("loadInventory", authPayload({}), { timeoutMs: 20000, retries: 1 });
+  state.inventory = (res.data && res.data.items) ? res.data.items : [];
 }
 
-function switchTab(tabName) {
-    // Update active tab
-    document.querySelectorAll('.nav-tab').forEach(tab => {
-        tab.classList.remove('active');
+async function refreshCabinets() {
+  const res = await apiCall("getCabinetList", authPayload({}), { timeoutMs: 15000, retries: 1 });
+  state.cabinets = (res.data && res.data.cabinets) ? res.data.cabinets : [];
+}
+
+function authPayload(extra) {
+  return Object.assign({}, extra || {}, { staffId: state.staffId, role: state.role });
+}
+
+/** =========================
+ * RENDER TABS
+ * ========================= */
+async function renderActiveTab() {
+  setNavActive_();
+  if (state.activeTab === "inventory") return renderInventoryTab();
+  if (state.activeTab === "daily") return renderDailyTab();
+  if (state.activeTab === "reorder") return renderReorderTab();
+  if (state.activeTab === "expired") return renderExpiredTab();
+  if (state.activeTab === "shift") return renderShiftTab();
+  if (state.activeTab === "usage") return renderUsageTab();
+  if (state.activeTab === "admin") return renderAdminTab();
+}
+
+/** Inventory */
+async function renderInventoryTab() {
+  setPanelTitle("Inventory");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => {
+      await refreshCabinets();
+      await refreshInventory();
+      await renderInventoryTab();
     });
-    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
-    
-    // Update active content
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
-    document.getElementById(`${tabName}Tab`).classList.add('active');
-    
-    currentTab = tabName;
-    
-    // Load tab-specific data
-    switch (tabName) {
-        case 'inventory':
-            loadInventory();
-            break;
-        case 'dailyCheck':
-            loadDailyCheckItems();
-            break;
-        case 'reorder':
-            loadReorderItems();
-            break;
-        case 'expired':
-            loadExpiredItems();
-            break;
-        case 'usage':
-            loadUsageLogs();
-            break;
-        case 'reports':
-            // Reports are generated on demand
-            break;
-        case 'admin':
-            loadAdminData();
-            break;
-    }
-}
+  });
 
-// ==================== INVENTORY MANAGEMENT ====================
+  setPanelActions([btnRefresh]);
 
-async function loadInventory() {
-    if (currentTab !== 'inventory') return;
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('loadInventory');
-        inventoryData = response.data || [];
-        renderInventoryTable(inventoryData);
-    } catch (error) {
-        showMessage('โหลดข้อมูลไม่สำเร็จ', error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
+  await withLoading(async () => { await refreshInventory(); });
 
-function renderInventoryTable(data) {
-    const tbody = document.getElementById('inventoryTableBody');
-    tbody.innerHTML = '';
-    
-    if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="no-data">ไม่มีข้อมูลสินค้า</td></tr>';
-        return;
-    }
-    
-    data.forEach(item => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>${item.รายการ}</td>
-            <td>${item.lotNo}</td>
-            <td class="number">${item.จำนวน}</td>
-            <td class="number">${item.minimumStock}</td>
-            <td class="date">${item.วันที่หมดอายุ}</td>
-            <td>${item.ตู้}</td>
-            <td><span class="category-badge ${item.category.toLowerCase()}">${item.category}</span></td>
-            <td class="actions">
-                ${currentUser.role === CONFIG.ROLES.ADMIN ? `
-                    <button class="btn-icon" onclick="editItem(${item.id})" title="แก้ไข">
-                        <i class="fas fa-edit"></i>
-                    </button>
-                    <button class="btn-icon btn-danger" onclick="deleteItem(${item.id})" title="ลบ">
-                        <i class="fas fa-trash"></i>
-                    </button>
-                ` : ''}
-            </td>
-        `;
-        tbody.appendChild(row);
-    });
-}
+  const canEdit = (state.role === "Admin");
 
-function searchInventory() {
-    const searchTerm = document.getElementById('inventorySearch').value.toLowerCase();
-    const filteredData = inventoryData.filter(item => 
-        item.รายการ.toLowerCase().includes(searchTerm) ||
-        item.lotNo.toLowerCase().includes(searchTerm) ||
-        item.ตู้.toLowerCase().includes(searchTerm)
-    );
-    renderInventoryTable(filteredData);
-}
+  const rows = state.inventory.map(it => {
+    const exp = it.expiryDate ? formatDisplayDate(it.expiryDate) : "";
+    const actions = canEdit
+      ? `<div class="row gap">
+           <button class="btn btn-sm" data-act="edit" data-id="${it.rowNumber}">Edit</button>
+           <button class="btn btn-sm btn-danger" data-act="del" data-id="${it.rowNumber}">Delete</button>
+         </div>`
+      : `<span class="muted">View only</span>`;
 
-function refreshInventory() {
-    loadInventory();
-}
+    return `<tr>
+      <td>${escapeHtml(it.item)}</td>
+      <td>${escapeHtml(it.lotNo)}</td>
+      <td class="num">${escapeHtml(it.qty)}</td>
+      <td class="num">${escapeHtml(it.minStock)}</td>
+      <td>${escapeHtml(exp)}</td>
+      <td>${escapeHtml(it.note || "")}</td>
+      <td>${escapeHtml(it.cabinet || "")}</td>
+      <td>${escapeHtml(it.category || "")}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join("");
 
-// ==================== ITEM MODAL ====================
+  const form = canEdit ? renderInventoryForm() : `<div class="hint">RN/PN สามารถดูรายการได้ แต่แก้ไข Inventory ได้เฉพาะ Admin</div>`;
 
-let currentEditItem = null;
-
-function showAddItemModal() {
-    currentEditItem = null;
-    document.getElementById('itemModalTitle').textContent = 'เพิ่มรายการสินค้า';
-    document.getElementById('itemForm').reset();
-    document.getElementById('itemModal').classList.add('active');
-}
-
-function editItem(id) {
-    const item = inventoryData.find(i => i.id === id);
-    if (!item) return;
-    
-    currentEditItem = item;
-    document.getElementById('itemModalTitle').textContent = 'แก้ไขรายการสินค้า';
-    
-    // Fill form
-    document.getElementById('itemName').value = item.รายการ;
-    document.getElementById('itemLotNo').value = item.lotNo;
-    document.getElementById('itemQuantity').value = item.จำนวน;
-    document.getElementById('itemMinStock').value = item.minimumStock;
-    document.getElementById('itemExpiryDate').value = item.วันที่หมดอายุ ? formatDateInput(item.วันที่หมดอายุ) : '';
-    document.getElementById('itemCabinet').value = item.ตู้;
-    document.getElementById('itemCategory').value = item.category;
-    document.getElementById('itemNotes').value = item.หมายเหตุ;
-    
-    document.getElementById('itemModal').classList.add('active');
-}
-
-function closeItemModal() {
-    document.getElementById('itemModal').classList.remove('active');
-    currentEditItem = null;
-}
-
-async function saveItem(event) {
-    event.preventDefault();
-    
-    const itemData = {
-        รายการ: document.getElementById('itemName').value,
-        lotNo: document.getElementById('itemLotNo').value,
-        จำนวน: parseInt(document.getElementById('itemQuantity').value),
-        minimumStock: parseInt(document.getElementById('itemMinStock').value),
-        วันที่หมดอายุ: document.getElementById('itemExpiryDate').value,
-        ตู้: document.getElementById('itemCabinet').value,
-        category: document.getElementById('itemCategory').value,
-        หมายเหตุ: document.getElementById('itemNotes').value
-    };
-    
-    if (currentEditItem) {
-        itemData.id = currentEditItem.id;
-    }
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('saveInventoryItem', {
-            itemData,
-            staffId: currentUser.staffId,
-            role: currentUser.role
-        });
-        
-        if (response.success) {
-            showMessage('บันทึกสำเร็จ', response.message, 'success');
-            closeItemModal();
-            loadInventory();
-        } else {
-            showMessage('บันทึกไม่สำเร็จ', response.error, 'error');
-        }
-    } catch (error) {
-        showMessage('เกิดข้อผิดพลาด', error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
-
-async function deleteItem(id) {
-    if (!confirm('คุณแน่ใจหรือไม่ที่จะลบรายการนี้?')) return;
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('deleteItem', {
-            id,
-            staffId: currentUser.staffId,
-            role: currentUser.role
-        });
-        
-        if (response.success) {
-            showMessage('ลบสำเร็จ', response.message, 'success');
-            loadInventory();
-        } else {
-            showMessage('ลบไม่สำเร็จ', response.error, 'error');
-        }
-    } catch (error) {
-        showMessage('เกิดข้อผิดพลาด', error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
-
-// ==================== DAILY CHECK ====================
-
-async function loadDailyCheckItems() {
-    if (currentTab !== 'dailyCheck') return;
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('loadInventory');
-        const inventory = response.data || [];
-        
-        // Filter items based on user role
-        let itemsToCheck = [];
-        if (currentUser.role === CONFIG.ROLES.RN) {
-            itemsToCheck = inventory.filter(item => item.category === 'Medicine');
-        } else if (currentUser.role === CONFIG.ROLES.PN) {
-            itemsToCheck = inventory.filter(item => item.category === 'Medical Supply');
-        } else {
-            itemsToCheck = inventory; // Admin can check all
-        }
-        
-        renderDailyCheckItems(itemsToCheck);
-        
-    } catch (error) {
-        showMessage('โหลดข้อมูลไม่สำเร็จ', error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
-
-function renderDailyCheckItems(items) {
-    const container = document.getElementById('checkItemsList');
-    container.innerHTML = '';
-    
-    if (items.length === 0) {
-        container.innerHTML = '<p class="no-items">ไม่มีรายการที่ต้องตรวจสำหรับบทบาทของคุณ</p>';
-        return;
-    }
-    
-    const table = document.createElement('table');
-    table.className = 'check-table';
-    table.innerHTML = `
+  setPanelBody(`
+    ${form}
+    <div class="tablewrap">
+      <table class="table">
         <thead>
-            <tr>
-                <th>รายการ</th>
-                <th>Lot No</th>
-                <th>จำนวน</th>
-                <th>จำนวนที่ตรวจ</th>
-                <th>สถานะ</th>
-                <th>หมายเหตุ</th>
-            </tr>
+          <tr>
+            <th>รายการ</th><th>Lot No</th><th class="num">จำนวน</th><th class="num">Minimum Stock</th>
+            <th>วันที่หมดอายุ</th><th>หมายเหตุ</th><th>ตู้</th><th>Category</th><th>Action</th>
+          </tr>
         </thead>
-        <tbody id="checkItemsTableBody"></tbody>
-    `;
-    
-    const tbody = table.querySelector('tbody');
-    items.forEach((item, index) => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>${item.รายการ}</td>
-            <td>${item.lotNo}</td>
-            <td class="number">${item.จำนวน}</td>
-            <td>
-                <input type="number" class="check-quantity" 
-                       data-index="${index}" 
-                       data-item="${item.รายการ}" 
-                       data-lot="${item.lotNo}"
-                       data-category="${item.category}"
-                       min="0" required>
-            </td>
-            <td>
-                <select class="check-status" data-index="${index}">
-                    <option value="Normal">ปกติ</option>
-                    <option value="Low">ต่ำกว่าเกณฑ์</option>
-                    <option value="Expiring">ใกล้หมดอายุ</option>
-                    <option value="Damaged">ชำรุด</option>
-                </select>
-            </td>
-            <td>
-                <input type="text" class="check-notes" data-index="${index}" placeholder="หมายเหตุ">
-            </td>
-        `;
-        tbody.appendChild(row);
+        <tbody>${rows || `<tr><td colspan="9" class="muted">No data</td></tr>`}</tbody>
+      </table>
+    </div>
+  `);
+
+  if (canEdit) {
+    // attach edit/delete handlers
+    el("panelBody").querySelectorAll("button[data-act]").forEach(b => {
+      b.onclick = async () => {
+        const act = b.getAttribute("data-act");
+        const id = Number(b.getAttribute("data-id"));
+        if (act === "del") return onDeleteInventory(id);
+        if (act === "edit") return onEditInventory(id);
+      };
     });
-    
-    container.appendChild(table);
+
+    el("invCancelEdit")?.addEventListener("click", () => clearInvForm());
+    el("invSave")?.addEventListener("click", () => onSaveInventory());
+  }
 }
 
-async function saveDailyCheck() {
-    const date = document.getElementById('checkDate').value;
-    const round = document.getElementById('checkRound').value;
-    
-    if (!date || !round) {
-        showMessage('กรุณากรอกข้อมูล', 'กรุณาเลือกวันที่และรอบการตรวจ', 'warning');
-        return;
-    }
-    
-    // Collect check data
-    const checkDataArray = [];
-    const quantityInputs = document.querySelectorAll('.check-quantity');
-    
-    quantityInputs.forEach(input => {
-        const index = input.dataset.index;
-        const quantity = parseInt(input.value);
-        
-        if (quantity >= 0) {
-            const status = document.querySelector(`.check-status[data-index="${index}"]`).value;
-            const notes = document.querySelector(`.check-notes[data-index="${index}"]`).value;
-            
-            checkDataArray.push({
-                วันที่: date,
-                รายการ: input.dataset.item,
-                lotNo: input.dataset.lot,
-                จำนวนที่ตรวจ: quantity,
-                รอบ: round,
-                staffId: currentUser.staffId,
-                staffName: currentUser.name,
-                สถานะ: status,
-                category: input.dataset.category,
-                หมายเหตุ: notes
-            });
-        }
+function renderInventoryForm() {
+  return `
+    <div class="card inner">
+      <h3>เพิ่ม/แก้ไขรายการ (Admin)</h3>
+      <input type="hidden" id="invRowNumber" />
+      <div class="grid4">
+        <label><div class="label">รายการ</div><input id="invItem" type="text" /></label>
+        <label><div class="label">Lot No</div><input id="invLot" type="text" /></label>
+        <label><div class="label">จำนวน</div><input id="invQty" type="number" min="0" step="1" value="0" /></label>
+        <label><div class="label">Minimum Stock</div><input id="invMin" type="number" min="0" step="1" value="0" /></label>
+
+        <label><div class="label">วันที่หมดอายุ</div><input id="invExp" type="date" /></label>
+        <label><div class="label">ตู้</div>
+          <input id="invCabinet" list="cabList" placeholder="เช่น A1" />
+          <datalist id="cabList">${state.cabinets.map(c => `<option value="${escapeHtml(c)}"></option>`).join("")}</datalist>
+        </label>
+        <label><div class="label">Category</div>
+          <select id="invCat">
+            <option value="">(เลือก)</option>
+            <option value="Medicine">Medicine</option>
+            <option value="Medical Supply">Medical Supply</option>
+          </select>
+        </label>
+        <label><div class="label">หมายเหตุ</div><input id="invNote" type="text" /></label>
+      </div>
+      <div class="row gap">
+        <button class="btn" id="invSave" type="button">Save</button>
+        <button class="btn btn-secondary" id="invCancelEdit" type="button">Clear</button>
+      </div>
+      <div class="hint">หมายเหตุ: Category ใช้สำหรับ RBAC ของ Daily Check (RN=Medicine, PN=Medical Supply)</div>
+    </div>
+  `;
+}
+
+function clearInvForm() {
+  el("invRowNumber").value = "";
+  el("invItem").value = "";
+  el("invLot").value = "";
+  el("invQty").value = "0";
+  el("invMin").value = "0";
+  el("invExp").value = "";
+  el("invNote").value = "";
+  el("invCabinet").value = "";
+  el("invCat").value = "";
+}
+
+async function onEditInventory(rowNumber) {
+  const it = state.inventory.find(x => Number(x.rowNumber) === Number(rowNumber));
+  if (!it) return;
+
+  el("invRowNumber").value = String(it.rowNumber);
+  el("invItem").value = it.item || "";
+  el("invLot").value = it.lotNo || "";
+  el("invQty").value = String(it.qty ?? 0);
+  el("invMin").value = String(it.minStock ?? 0);
+  el("invExp").value = it.expiryDate || "";
+  el("invNote").value = it.note || "";
+  el("invCabinet").value = it.cabinet || "";
+  el("invCat").value = it.category || "";
+  showMsg("Edit", "โหลดข้อมูลเข้าฟอร์มแล้ว (แก้ไขและกด Save)");
+}
+
+async function onSaveInventory() {
+  const itemData = {
+    rowNumber: el("invRowNumber").value ? Number(el("invRowNumber").value) : undefined,
+    item: el("invItem").value.trim(),
+    lotNo: el("invLot").value.trim(),
+    qty: Number(el("invQty").value),
+    minStock: Number(el("invMin").value),
+    expiryDate: el("invExp").value || "",
+    note: el("invNote").value.trim(),
+    cabinet: el("invCabinet").value.trim(),
+    category: el("invCat").value
+  };
+
+  await withLoading(async () => {
+    await apiCall("saveInventoryItem", authPayload({ itemData }), { timeoutMs: 30000, retries: 1 });
+    await refreshCabinets();
+    await refreshInventory();
+    clearInvForm();
+    await renderInventoryTab();
+  });
+
+  showMsg("Saved", "บันทึกเรียบร้อย");
+}
+
+async function onDeleteInventory(rowNumber) {
+  const ok = confirm(`Delete inventory row ${rowNumber}?`);
+  if (!ok) return;
+
+  await withLoading(async () => {
+    await apiCall("deleteItem", authPayload({ id: rowNumber }), { timeoutMs: 30000, retries: 1 });
+    await refreshInventory();
+    await renderInventoryTab();
+  });
+
+  showMsg("Deleted", "ลบเรียบร้อย");
+}
+
+/** Daily Check */
+async function renderDailyTab() {
+  setPanelTitle("Daily Check");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => {
+      await refreshInventory();
+      await renderDailyTab();
     });
-    
-    if (checkDataArray.length === 0) {
-        showMessage('ไม่มีข้อมูล', 'กรุณากรอกจำนวนที่ตรวจอย่างน้อย 1 รายการ', 'warning');
-        return;
-    }
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('saveDailyCheck', {
-            checkDataArray,
-            staffId: currentUser.staffId,
-            role: currentUser.role
+  });
+
+  setPanelActions([btnRefresh]);
+
+  await withLoading(async () => { await refreshInventory(); });
+
+  const role = state.role;
+  const type = (role === "RN") ? "Medicine" : (role === "PN") ? "Supply" : "Supply";
+
+  const body = `
+    <div class="card inner">
+      <h3>บันทึกการตรวจประจำเวร</h3>
+      <div class="grid3">
+        <label><div class="label">วันที่</div><input id="dcDate" type="date" value="${todayYmd()}" /></label>
+        <label><div class="label">รอบ</div>
+          <select id="dcRound">
+            <option value="Day">Day</option>
+            <option value="Night">Night</option>
+            <option value="Other">Other</option>
+          </select>
+        </label>
+        <label><div class="label">ประเภท</div>
+          ${role === "Admin" ? `
+            <select id="dcType">
+              <option value="Supply">Supply (Medical Supply)</option>
+              <option value="Medicine">Medicine</option>
+            </select>
+          ` : `
+            <input id="dcType" type="text" value="${escapeHtml(type)}" disabled />
+          `}
+        </label>
+      </div>
+      <div class="hint">
+        RN ตรวจได้เฉพาะ Category=Medicine • PN ตรวจได้เฉพาะ Category=Medical Supply • Admin เลือกประเภทได้
+      </div>
+      <div class="row gap">
+        <button class="btn" id="dcSave" type="button">Save Daily Check</button>
+      </div>
+    </div>
+
+    ${renderDailyCheckTable(type)}
+  `;
+
+  setPanelBody(body);
+
+  if (role === "Admin") el("dcType").value = "Supply";
+
+  el("dcSave").onclick = async () => {
+    const date = el("dcDate").value;
+    const round = el("dcRound").value;
+    const t = (role === "Admin") ? el("dcType").value : type;
+
+    const checks = [];
+    document.querySelectorAll("input[data-dc='qty']").forEach(inp => {
+      const item = inp.getAttribute("data-item");
+      const lotNo = inp.getAttribute("data-lot");
+      const checkedQty = Number(inp.value);
+      const st = document.querySelector(`select[data-dc='status'][data-item='${cssEsc(item)}'][data-lot='${cssEsc(lotNo)}']`);
+      const status = st ? st.value : "OK";
+      checks.push({ item, lotNo, checkedQty, status });
+    });
+
+    await withLoading(async () => {
+      await apiCall("saveDailyCheck", authPayload({ date, round, type: (t === "Medicine" ? "Medicine" : "Supply"), checks }), { timeoutMs: 30000, retries: 1 });
+    });
+
+    showMsg("Saved", "บันทึก Daily Check เรียบร้อย");
+  };
+}
+
+function renderDailyCheckTable(type) {
+  const wantCategory =
+    (state.role === "RN") ? "Medicine" :
+    (state.role === "PN") ? "Medical Supply" :
+    (type === "Medicine") ? "Medicine" : "Medical Supply";
+
+  const items = state.inventory.filter(it => String(it.category || "") === wantCategory);
+
+  const rows = items.map(it => {
+    const exp = it.expiryDate ? formatDisplayDate(it.expiryDate) : "";
+    return `<tr>
+      <td>${escapeHtml(it.item)}</td>
+      <td>${escapeHtml(it.lotNo)}</td>
+      <td>${escapeHtml(it.cabinet || "")}</td>
+      <td>${escapeHtml(exp)}</td>
+      <td class="num">${escapeHtml(it.qty)}</td>
+      <td class="num">
+        <input class="in-sm" data-dc="qty" data-item="${escapeHtmlAttr(it.item)}" data-lot="${escapeHtmlAttr(it.lotNo)}" type="number" min="0" step="1" value="${escapeHtmlAttr(it.qty)}" />
+      </td>
+      <td>
+        <select class="in-sm" data-dc="status" data-item="${escapeHtmlAttr(it.item)}" data-lot="${escapeHtmlAttr(it.lotNo)}">
+          <option value="OK">OK</option>
+          <option value="LOW">LOW</option>
+          <option value="MISSING">MISSING</option>
+          <option value="EXPIRED">EXPIRED</option>
+        </select>
+      </td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="tablewrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>รายการ</th><th>Lot No</th><th>ตู้</th><th>หมดอายุ</th><th class="num">คงเหลือ</th><th class="num">จำนวนที่ตรวจ</th><th>สถานะ</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows || `<tr><td colspan="7" class="muted">No items for category: ${escapeHtml(wantCategory)}</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+/** Reorder */
+async function renderReorderTab() {
+  setPanelTitle("Reorder Items");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => { await renderReorderTab(); });
+  });
+  setPanelActions([btnRefresh]);
+
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadReorderItems", authPayload({}), { timeoutMs: 30000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.items || []).map(it => `
+    <tr>
+      <td>${escapeHtml(it.item)}</td>
+      <td class="num">${escapeHtml(it.totalQty)}</td>
+      <td class="num">${escapeHtml(it.minStock)}</td>
+      <td class="num"><b>${escapeHtml(it.reorderQty)}</b></td>
+    </tr>
+  `).join("");
+
+  setPanelBody(`
+    <div class="hint">ระบบคำนวณจาก Inventory (รวมจำนวนต่อ “รายการ”) และซิงก์ไปยังชีต “Reorder Items”</div>
+    <div class="tablewrap">
+      <table class="table">
+        <thead><tr><th>รายการ</th><th class="num">จำนวนรวม</th><th class="num">Minimum Stock</th><th class="num">จำนวนที่ต้องสั่ง</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4" class="muted">No reorder needed</td></tr>`}</tbody>
+      </table>
+    </div>
+  `);
+}
+
+/** Expired */
+async function renderExpiredTab() {
+  setPanelTitle("Expired Items");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => { await renderExpiredTab(); });
+  });
+  setPanelActions([btnRefresh]);
+
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadExpiredItems", authPayload({}), { timeoutMs: 30000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.items || []).map(it => `
+    <tr>
+      <td>${escapeHtml(it.item)}</td>
+      <td>${escapeHtml(it.lotNo)}</td>
+      <td class="num">${escapeHtml(it.qty)}</td>
+      <td>${escapeHtml(formatDisplayDate(it.expiryDate))}</td>
+      <td>${escapeHtml(it.status)}</td>
+    </tr>
+  `).join("");
+
+  const soon = (data.soonExpiring || []).slice(0, 20).map(x =>
+    `<li>${escapeHtml(x.item)} | Lot ${escapeHtml(x.lotNo)} | Exp ${escapeHtml(formatDisplayDate(x.expiryDate))} | Qty ${escapeHtml(x.qty)}</li>`
+  ).join("");
+
+  setPanelBody(`
+    <div class="hint">ระบบคำนวณจาก Inventory และซิงก์ไปยังชีต “Expired Items”</div>
+
+    <div class="tablewrap">
+      <table class="table">
+        <thead><tr><th>รายการ</th><th>Lot No</th><th class="num">จำนวน</th><th>วันที่หมดอายุ</th><th>สถานะ</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5" class="muted">No expired items</td></tr>`}</tbody>
+      </table>
+    </div>
+
+    <div class="card inner">
+      <h3>Expiring Soon (<= 30 days)</h3>
+      <ul>${soon || `<li class="muted">None</li>`}</ul>
+    </div>
+  `);
+}
+
+/** Shift Summary */
+async function renderShiftTab() {
+  setPanelTitle("Shift Summary");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => { await renderShiftTab(); });
+  });
+  setPanelActions([btnRefresh]);
+
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadShiftSummary", authPayload({}), { timeoutMs: 20000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.rows || []).slice().reverse().slice(0, 200).map(r => `
+    <tr>
+      <td>${escapeHtml(formatDisplayDate(r.date))}</td>
+      <td>${escapeHtml(r.round)}</td>
+      <td>${escapeHtml(r.time)}</td>
+      <td>${escapeHtml(r.inspector)}</td>
+    </tr>
+  `).join("");
+
+  setPanelBody(`
+    <div class="tablewrap">
+      <table class="table">
+        <thead><tr><th>วันที่</th><th>รอบ</th><th>เวลา</th><th>ผู้ตรวจสอบ</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4" class="muted">No data</td></tr>`}</tbody>
+      </table>
+    </div>
+  `);
+}
+
+/** Usage */
+async function renderUsageTab() {
+  setPanelTitle("Usage");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => {
+      await refreshInventory();
+      await renderUsageTab();
+    });
+  });
+  setPanelActions([btnRefresh]);
+
+  await withLoading(async () => { await refreshInventory(); });
+
+  const options = state.inventory.map(it => {
+    const label = `${it.item} | Lot ${it.lotNo} | Qty ${it.qty} | Exp ${it.expiryDate || "-"}`;
+    return `<option value="${escapeHtmlAttr(it.item)}||${escapeHtmlAttr(it.lotNo)}">${escapeHtml(label)}</option>`;
+  }).join("");
+
+  setPanelBody(`
+    <div class="card inner">
+      <h3>Record Usage</h3>
+      <div class="grid3">
+        <label><div class="label">วันที่</div><input id="useDate" type="date" value="${todayYmd()}" /></label>
+        <label><div class="label">รายการ/ล็อต</div>
+          <select id="useSel">
+            <option value="">(เลือก)</option>
+            ${options}
+          </select>
+        </label>
+        <label><div class="label">จำนวนที่เบิก</div><input id="useQty" type="number" min="1" step="1" value="1" /></label>
+        <label><div class="label">ผู้เบิก</div><input id="useRequester" type="text" value="${escapeHtmlAttr(state.staffName || state.staffId)}" /></label>
+      </div>
+      <div class="row gap">
+        <button class="btn" id="btnUseSave" type="button">Save Usage</button>
+      </div>
+      <div class="hint">ระบบจะตัดสต็อกจาก Inventory (ตาม item+lot) และเพิ่มบรรทัดใน “Usage Logs”</div>
+    </div>
+
+    <div id="usageLogs"></div>
+  `);
+
+  el("btnUseSave").onclick = async () => {
+    const date = el("useDate").value;
+    const sel = el("useSel").value;
+    const qtyUsed = Number(el("useQty").value);
+    const requester = el("useRequester").value.trim();
+
+    if (!sel) return showMsg("Usage", "กรุณาเลือกรายการ/ล็อต");
+    const [item, lotNo] = sel.split("||");
+
+    await withLoading(async () => {
+      await apiCall("recordUsage", authPayload({ usageData: { date, item, lotNo, qtyUsed, requester } }), { timeoutMs: 30000, retries: 1 });
+      await refreshInventory();
+      await renderUsageLogs();
+    });
+
+    showMsg("Saved", "บันทึกการเบิกเรียบร้อย");
+  };
+
+  await renderUsageLogs();
+}
+
+async function renderUsageLogs() {
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadUsageLogs", authPayload({}), { timeoutMs: 20000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.rows || []).slice().reverse().slice(0, 300).map(r => `
+    <tr>
+      <td>${escapeHtml(formatDisplayDate(r.date))}</td>
+      <td>${escapeHtml(r.item)}</td>
+      <td>${escapeHtml(r.lotNo)}</td>
+      <td class="num">${escapeHtml(r.qtyUsed)}</td>
+      <td>${escapeHtml(r.requester)}</td>
+      <td class="muted">${escapeHtml(r.timestamp)}</td>
+    </tr>
+  `).join("");
+
+  el("usageLogs").innerHTML = `
+    <div class="tablewrap">
+      <table class="table">
+        <thead><tr><th>วันที่</th><th>รายการ</th><th>Lot No</th><th class="num">จำนวนที่เบิก</th><th>ผู้เบิก</th><th>Timestamp</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="6" class="muted">No usage logs</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+/** Admin */
+async function renderAdminTab() {
+  setPanelTitle("Report / Settings (Admin)");
+
+  const btnStatus = button("System Status", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("getSystemStatus", authPayload({}), { timeoutMs: 20000, retries: 1 });
+      showMsg("System Status", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnSelfTest = button("debugSelfTest()", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("debugSelfTest", authPayload({}), { timeoutMs: 30000, retries: 0 });
+      showMsg("debugSelfTest", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnBackup = button("Backup Now", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("backupData", authPayload({}), { timeoutMs: 30000, retries: 0 });
+      showMsg("Backup", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnTrigger = button("Setup Trigger", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("setupDailyTrigger", authPayload({}), { timeoutMs: 30000, retries: 0 });
+      showMsg("Trigger", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnAutoEmail = button("Run autoCheckAndEmail()", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("autoCheckAndEmail", authPayload({}), { timeoutMs: 30000, retries: 0 });
+      showMsg("autoCheckAndEmail", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnPdf = button("Generate PDF + Email", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("generatePDFandEmail", authPayload({}), { timeoutMs: 60000, retries: 0 });
+      showMsg("PDF", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  setPanelActions([btnStatus, btnSelfTest, btnBackup, btnTrigger, btnAutoEmail, btnPdf]);
+
+  const staffHtml = await renderStaffAdmin();
+  const emailHtml = await renderEmailAdmin();
+
+  setPanelBody(`
+    <div class="grid2">
+      <div>${staffHtml}</div>
+      <div>${emailHtml}</div>
+    </div>
+
+    <div class="card inner">
+      <h3>Notes (Security Hardening)</h3>
+      <ul class="hint">
+        <li>ปัจจุบันใช้ StaffID/Password แบบง่าย (hash ในชีต) — แนะนำเพิ่ม session token/HMAC และ expiry</li>
+        <li>จำกัดการ Deploy Web App ให้ “Anyone” เฉพาะกรณีจำเป็น และควบคุมการเข้าถึงเครือข่าย/โดเมน</li>
+        <li>พิจารณาแยก Spreadsheet ต่อหน่วยงานและใช้บัญชีบริการ/Workspace controls</li>
+      </ul>
+    </div>
+  `);
+
+  wireStaffAdminEvents();
+  wireEmailAdminEvents();
+}
+
+async function renderStaffAdmin() {
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadStaff", authPayload({}), { timeoutMs: 20000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.staff || []).map(s => `
+    <tr>
+      <td>${escapeHtml(s.staffId)}</td>
+      <td>${escapeHtml(s.name)}</td>
+      <td>${escapeHtml(s.role)}</td>
+      <td class="row gap">
+        <button class="btn btn-sm" data-staff-act="edit" data-staff-id="${escapeHtmlAttr(s.staffId)}">Edit</button>
+        <button class="btn btn-sm btn-danger" data-staff-act="del" data-staff-id="${escapeHtmlAttr(s.staffId)}">Delete</button>
+      </td>
+    </tr>
+  `).join("");
+
+  return `
+    <div class="card inner">
+      <h3>Staff (Admin)</h3>
+
+      <input type="hidden" id="stOriginalId" />
+      <div class="grid4">
+        <label><div class="label">StaffID</div><input id="stId" type="text" /></label>
+        <label><div class="label">ชื่อ</div><input id="stName" type="text" /></label>
+        <label><div class="label">Role</div>
+          <select id="stRole">
+            <option value="Admin">Admin</option>
+            <option value="RN">RN</option>
+            <option value="PN">PN</option>
+          </select>
+        </label>
+        <label><div class="label">Password (ใส่เพื่อเปลี่ยน)</div><input id="stPw" type="password" /></label>
+      </div>
+
+      <div class="row gap">
+        <button class="btn" id="stSave" type="button">Save (Add/Update)</button>
+        <button class="btn btn-secondary" id="stClear" type="button">Clear</button>
+      </div>
+
+      <div class="tablewrap">
+        <table class="table">
+          <thead><tr><th>StaffID</th><th>ชื่อ</th><th>Role</th><th>Action</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="4" class="muted">No staff</td></tr>`}</tbody>
+        </table>
+      </div>
+
+      <div class="hint">Password จะถูกเก็บเป็น SHA-256 hash ในชีต (ไม่ส่งกลับมาที่หน้าเว็บ)</div>
+    </div>
+  `;
+}
+
+function wireStaffAdminEvents() {
+  document.querySelectorAll("button[data-staff-act]").forEach(b => {
+    b.onclick = async () => {
+      const act = b.getAttribute("data-staff-act");
+      const sid = b.getAttribute("data-staff-id");
+      if (act === "edit") {
+        const res = await apiCall("loadStaff", authPayload({}), { timeoutMs: 20000, retries: 1 });
+        const rec = (res.data.staff || []).find(x => x.staffId === sid);
+        if (!rec) return;
+        el("stOriginalId").value = rec.staffId;
+        el("stId").value = rec.staffId;
+        el("stName").value = rec.name;
+        el("stRole").value = rec.role;
+        el("stPw").value = "";
+        showMsg("Edit Staff", "โหลดข้อมูลเข้าฟอร์มแล้ว (ใส่ Password เฉพาะเมื่อจะเปลี่ยน)");
+      }
+      if (act === "del") {
+        const ok = confirm(`Delete staff ${sid}?`);
+        if (!ok) return;
+        await withLoading(async () => {
+          await apiCall("deleteStaff", authPayload({ staffIdToDelete: sid }), { timeoutMs: 30000, retries: 0 });
+          await renderAdminTab();
         });
-        
-        if (response.success) {
-            showMessage('บันทึกสำเร็จ', response.message, 'success');
-            // Clear form
-            document.querySelectorAll('.check-quantity').forEach(input => input.value = '');
-            document.querySelectorAll('.check-notes').forEach(input => input.value = '');
-        } else {
-            showMessage('บันทึกไม่สำเร็จ', response.error, 'error');
-        }
-    } catch (error) {
-        showMessage('เกิดข้อผิดพลาด', error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
-
-// ==================== USAGE MANAGEMENT ====================
-
-async function loadUsageLogs() {
-    if (currentTab !== 'usage') return;
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('loadUsageLogs');
-        const usageData = response.data || [];
-        renderUsageTable(usageData);
-    } catch (error) {
-        showMessage('โหลดข้อมูลไม่สำเร็จ', error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
-
-function renderUsageTable(data) {
-    const tbody = document.getElementById('usageTableBody');
-    tbody.innerHTML = '';
-    
-    if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="no-data">ไม่มีข้อมูลการเบิก</td></tr>';
-        return;
-    }
-    
-    data.forEach(log => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td class="date">${log.วันที่}</td>
-            <td>${log.รายการ}</td>
-            <td>${log.lotNo}</td>
-            <td class="number">${log.จำนวนที่เบิก}</td>
-            <td>${log.ผู้เบิก}</td>
-        `;
-        tbody.appendChild(row);
-    });
-}
-
-function showRecordUsageModal() {
-    document.getElementById('usageModal').classList.add('active');
-    loadUsageItems();
-}
-
-function closeUsageModal() {
-    document.getElementById('usageModal').classList.remove('active');
-    document.getElementById('usageForm').reset();
-}
-
-async function loadUsageItems() {
-    try {
-        const response = await apiCall('loadInventory');
-        const inventory = response.data || [];
-        
-        const itemSelect = document.getElementById('usageItem');
-        itemSelect.innerHTML = '<option value="">เลือกรายการ</option>';
-        
-        inventory.forEach(item => {
-            const option = document.createElement('option');
-            option.value = item.รายการ;
-            option.textContent = item.รายการ;
-            option.dataset.lots = JSON.stringify(inventory.filter(i => i.รายการ === item.รายการ).map(i => i.lotNo));
-            itemSelect.appendChild(option);
-        });
-        
-    } catch (error) {
-        console.error('Error loading usage items:', error);
-    }
-}
-
-document.getElementById('usageItem').addEventListener('change', function() {
-    const selectedOption = this.options[this.selectedIndex];
-    const lots = JSON.parse(selectedOption.dataset.lots || '[]');
-    
-    const lotSelect = document.getElementById('usageLotNo');
-    lotSelect.innerHTML = '<option value="">เลือก Lot No</option>';
-    
-    lots.forEach(lot => {
-        const option = document.createElement('option');
-        option.value = lot;
-        option.textContent = lot;
-        lotSelect.appendChild(option);
-    });
-});
-
-async function recordUsage(event) {
-    event.preventDefault();
-    
-    const usageData = {
-        วันที่: document.getElementById('usageDate').value,
-        รายการ: document.getElementById('usageItem').value,
-        lotNo: document.getElementById('usageLotNo').value,
-        จำนวนที่เบิก: parseInt(document.getElementById('usageQuantity').value)
+        showMsg("Deleted", "ลบ Staff เรียบร้อย");
+      }
     };
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('recordUsage', {
-            usageData,
-            staffId: currentUser.staffId
-        });
-        
-        if (response.success) {
-            showMessage('บันทึกสำเร็จ', response.message, 'success');
-            closeUsageModal();
-            loadUsageLogs();
-        } else {
-            showMessage('บันทึกไม่สำเร็จ', response.error, 'error');
-        }
-    } catch (error) {
-        showMessage('เกิดข้อผิดพลาด', error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
+  });
 
-function refreshUsageLogs() {
-    loadUsageLogs();
-}
+  el("stSave").onclick = async () => {
+    const originalStaffId = el("stOriginalId").value.trim();
+    const staffData = {
+      staffId: el("stId").value.trim(),
+      name: el("stName").value.trim(),
+      role: el("stRole").value,
+      password: el("stPw").value
+    };
 
-// ==================== REPORTS ====================
+    if (!staffData.staffId || !staffData.name || !staffData.role) return showMsg("Staff", "กรุณากรอกข้อมูลให้ครบ");
 
-async function loadReorderItems() {
-    if (currentTab !== 'reorder') return;
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('loadReorderItems');
-        const reorderData = response.data || [];
-        renderReorderTable(reorderData);
-    } catch (error) {
-        showMessage('โหลดข้อมูลไม่สำเร็จ', error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
-
-function renderReorderTable(data) {
-    const tbody = document.getElementById('reorderTableBody');
-    tbody.innerHTML = '';
-    
-    if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="no-data">ไม่มีรายการที่ต้องสั่งซื้อ</td></tr>';
-        return;
-    }
-    
-    data.forEach(item => {
-        const urgency = item.จำนวนต้องสั่ง > (item.minimumStock * 0.5) ? 'high' : 'medium';
-        
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>${item.รายการ}</td>
-            <td class="number">${item.จำนวนรวม}</td>
-            <td class="number">${item.minimumStock}</td>
-            <td class="number">${item.จำนวนที่ต้องสั่ง}</td>
-            <td><span class="urgency-badge ${urgency}">${urgency === 'high' ? 'เร่งด่วน' : 'ปกติ'}</span></td>
-        `;
-        tbody.appendChild(row);
+    await withLoading(async () => {
+      if (originalStaffId) {
+        await apiCall("updateStaff", authPayload({ staffData, originalStaffId }), { timeoutMs: 30000, retries: 0 });
+      } else {
+        if (!staffData.password) return showMsg("Staff", "การเพิ่ม Staff ใหม่ ต้องกำหนด Password");
+        await apiCall("addStaff", authPayload({ staffData }), { timeoutMs: 30000, retries: 0 });
+      }
+      await renderAdminTab();
     });
+
+    showMsg("Saved", "บันทึก Staff เรียบร้อย");
+  };
+
+  el("stClear").onclick = () => {
+    el("stOriginalId").value = "";
+    el("stId").value = "";
+    el("stName").value = "";
+    el("stRole").value = "Admin";
+    el("stPw").value = "";
+  };
 }
 
-async function loadExpiredItems() {
-    if (currentTab !== 'expired') return;
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('loadExpiredItems');
-        const expiredData = response.data || [];
-        renderExpiredTable(expiredData);
-    } catch (error) {
-        showMessage('โหลดข้อมูลไม่สำเร็จ', error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
+async function renderEmailAdmin() {
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadEmailRecipients", authPayload({}), { timeoutMs: 20000, retries: 1 });
+    data = res.data;
+  });
+
+  const emails = (data.emails || []).join("\n");
+
+  return `
+    <div class="card inner">
+      <h3>Email Recipients (Admin)</h3>
+      <textarea id="emList" rows="10" placeholder="one email per line">${escapeHtml(emails)}</textarea>
+      <div class="row gap">
+        <button class="btn" id="emSave" type="button">Save Recipients</button>
+      </div>
+      <div class="hint">ใช้สำหรับ autoCheckAndEmail() และ generatePDFandEmail()</div>
+    </div>
+  `;
 }
 
-function renderExpiredTable(data) {
-    const tbody = document.getElementById('expiredTableBody');
-    tbody.innerHTML = '';
-    
-    if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="no-data">ไม่มีรายการหมดอายุ</td></tr>';
-        return;
-    }
-    
-    data.forEach(item => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>${item.รายการ}</td>
-            <td>${item.lotNo}</td>
-            <td class="number">${item.จำนวน}</td>
-            <td class="date expired">${item.วันที่หมดอายุ}</td>
-            <td><span class="status-badge expired">หมดอายุ</span></td>
-        `;
-        tbody.appendChild(row);
+function wireEmailAdminEvents() {
+  el("emSave").onclick = async () => {
+    const lines = el("emList").value.split("\n").map(x => x.trim()).filter(Boolean);
+    await withLoading(async () => {
+      await apiCall("updateEmailRecipients", authPayload({ emails: lines }), { timeoutMs: 30000, retries: 0 });
     });
+    showMsg("Saved", "อัปเดตรายชื่อผู้รับอีเมลเรียบร้อย");
+  };
 }
 
-function refreshReorderItems() {
-    loadReorderItems();
+/** =========================
+ * UI HELPERS
+ * ========================= */
+function button(text, onClick) {
+  const b = document.createElement("button");
+  b.className = "btn btn-secondary";
+  b.textContent = text;
+  b.onclick = onClick;
+  return b;
 }
 
-function refreshExpiredItems() {
-    loadExpiredItems();
+async function withLoading(fn) {
+  setLoading(true);
+  try {
+    return await fn();
+  } catch (err) {
+    const rid = err && err.requestId ? `<div class="muted">requestId: ${escapeHtml(err.requestId)}</div>` : "";
+    showMsg("Error", `<div class="error">${escapeHtml(err.message || String(err))}</div>${rid}`);
+    throw err;
+  } finally {
+    setLoading(false);
+  }
 }
 
-function generateReorderReport() {
-    loadReorderItems();
-    switchTab('reorder');
+function escapeHtmlAttr(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
-function generateExpiredReport() {
-    loadExpiredItems();
-    switchTab('expired');
+// For querySelector attribute matching; minimal
+function cssEsc(s) {
+  return String(s || "").replace(/["\\]/g, "\\$&");
 }
 
-function generateUsageReport() {
-    loadUsageLogs();
-    switchTab('usage');
-}
-
-// ==================== ADMIN FUNCTIONS ====================
-
-async function loadAdminData() {
-    if (currentTab !== 'admin') return;
-    
-    if (currentUser.role !== CONFIG.ROLES.ADMIN) {
-        showMessage('ไม่มีสิทธิ์เข้าถึง', 'คุณไม่มีสิทธิ์เข้าถึงหน้าตั้งค่า', 'error');
-        switchTab('inventory');
-        return;
+/** =========================
+ * INIT
+ * ========================= */
+function wireGlobalNavHandlers_() {
+  // Delegated clicks for bottom nav + sheet buttons
+  document.addEventListener("click", (ev) => {
+    const tabBtn = ev.target.closest("[data-go-tab]");
+    if (tabBtn) {
+      const tab = tabBtn.getAttribute("data-go-tab");
+      if (tab) navigateTo_(tab);
+      return;
     }
-}
 
-function showStaffManagement() {
-    // This would open a staff management modal or navigate to a staff management page
-    showMessage('ฟังก์ชั่นนี้ยังไม่เปิดใช้งาน', 'ระบบจัดการผู้ใช้จะเปิดใช้งานในเวอร์ชันถัดไป', 'info');
-}
-
-function showEmailSettings() {
-    showMessage('ฟังก์ชั่นนี้ยังไม่เปิดใช้งาน', 'ระบบตั้งค่าอีเมลจะเปิดใช้งานในเวอร์ชันถัดไป', 'info');
-}
-
-async function backupData() {
-    if (currentUser.role !== CONFIG.ROLES.ADMIN) {
-        showMessage('ไม่มีสิทธิ์', 'ต้องเป็นผู้ดูแลระบบเท่านั้น', 'error');
-        return;
+    const toggle = ev.target.closest("[data-toggle-sheet]");
+    if (toggle) {
+      toggleSheet_();
+      return;
     }
-    
-    showLoading(true);
-    
-    try {
-        const response = await apiCall('backupData', {
-            staffId: currentUser.staffId,
-            role: currentUser.role
-        });
-        
-        if (response.success) {
-            showMessage('สำรองข้อมูลสำเร็จ', response.message, 'success');
-        } else {
-            showMessage('สำรองข้อมูลไม่สำเร็จ', response.error, 'error');
-        }
-    } catch (error) {
-        showMessage('เกิดข้อผิดพลาด', error.message, 'error');
-    } finally {
-        showLoading(false);
+
+    const close = ev.target.closest("[data-close-sheet]");
+    if (close) {
+      closeSheet_();
+      return;
     }
+
+    if (ev.target && ev.target.id === "sheetBackdrop") {
+      closeSheet_();
+      return;
+    }
+  });
 }
 
-function setupNotifications() {
-    showMessage('ฟังก์ชั่นนี้ยังไม่เปิดใช้งาน', 'ระบบตั้งค่าการแจ้งเตือนจะเปิดใช้งานในเวอร์ชันถัดไป', 'info');
-}
+function boot() {
+  el("msgOk").onclick = hideMsg;
 
-// ==================== EVENT LISTENERS ====================
+  wireGlobalNavHandlers_();
 
-document.addEventListener('DOMContentLoaded', function() {
-    // Check for existing session
-    checkSession();
-    
-    // Set up form submissions
-    document.getElementById('itemForm').addEventListener('submit', saveItem);
-    document.getElementById('usageForm').addEventListener('submit', recordUsage);
-    
-    // Set up keyboard shortcuts
-    document.addEventListener('keydown', function(e) {
-        // ESC to close modals
-        if (e.key === 'Escape') {
-            document.querySelectorAll('.modal.active').forEach(modal => {
-                modal.classList.remove('active');
-            });
-            hideMessage();
-        }
-        
-        // Enter to submit login form
-        if (e.key === 'Enter' && document.getElementById('loginScreen').classList.contains('active')) {
-            login();
-        }
+  el("btnTogglePw").onclick = () => {
+    const p = el("loginPassword");
+    if (p.type === "password") {
+      p.type = "text";
+      el("btnTogglePw").textContent = "Hide";
+    } else {
+      p.type = "password";
+      el("btnTogglePw").textContent = "Show";
+    }
+  };
+
+  el("btnLogin").onclick = onLogin;
+  el("btnFirstTimeInit").onclick = onFirstTimeInit;
+
+  el("btnLogout").onclick = async () => {
+    clearSession();
+    closeSheet_();
+    setLoggedInUI(false);
+    el("loginPassword").value = "";
+    showMsg("Logout", "Logged out");
+  };
+
+  loadSession();
+
+  if (state.staffId && state.role) {
+    setLoggedInUI(true);
+    buildTabs();
+    withLoading(async () => {
+      await primeData();
+      await renderActiveTab();
     });
-    
-    // Set up click outside modal to close
-    document.querySelectorAll('.modal').forEach(modal => {
-        modal.addEventListener('click', function(e) {
-            if (e.target === this) {
-                this.classList.remove('active');
-            }
-        });
-    });
-    
-    // Check API connection on load
-    testApiConnection();
-});
+  } else {
+    setLoggedInUI(false);
+  }
 
-async function testApiConnection() {
-    try {
-        // Try to ping the API
-        const response = await fetch(CONFIG.API_BASE_URL + '?action=ping');
-        if (response.ok) {
-            console.log('API connection successful');
-        } else {
-            console.error('API connection failed');
-            showMessage('คำเตือน', 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ กรุณาตรวจสอบการตั้งค่า API URL', 'warning');
-        }
-    } catch (error) {
-        console.error('API connection error:', error);
-        showMessage('คำเตือน', 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ กรุณาตรวจสอบการตั้งค่า API URL', 'warning');
-    }
+  // Quick API_BASE_URL check
+  if (!API_BASE_URL || API_BASE_URL.includes("<PUT_WEB_APP_EXEC_URL_HERE>")) {
+    showMsg("Config required", `
+      <div class="warn">
+        กรุณาตั้งค่า <b>window.API_BASE_URL</b> ใน index.html ให้เป็น Apps Script Web App <b>/exec</b> URL
+      </div>
+    `);
+  }
 }
 
-// ==================== INITIALIZATION ====================
-
-// Initialize app when loaded
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeApp);
-} else {
-    initializeApp();
-}
-
-function initializeApp() {
-    console.log('ICU Stock Management App initialized');
-    
-    // Check if API URL is configured
-    if (CONFIG.API_BASE_URL === '<PUT_WEB_APP_EXEC_URL_HERE>' || !CONFIG.API_BASE_URL) {
-        showMessage('กรุณาตั้งค่า API URL', 'กรุณาแก้ไขค่า API_BASE_URL ในไฟล์ app.js ก่อนใช้งาน', 'error');
-    }
-}
+document.addEventListener("DOMContentLoaded", boot);
