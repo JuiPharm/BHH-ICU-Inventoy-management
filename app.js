@@ -1,724 +1,1142 @@
-/** ICU Stock Management - Google Apps Script Backend (JSON)
- *  - Supports GitHub Pages frontend
- *  - Fixes /exec POST redirect issue by allowing endpoint resolution via GET ping
- *  - Actions via doPost: action + payload (form-urlencoded)
+/* ICU Stock Management — GitHub Pages SPA (Vanilla JS)
+ * - fetch POST text/plain;charset=utf-8 to Apps Script Web App
+ * - timeout + retry
+ * - sessionStorage state
  */
 
-const SPREADSHEET_ID = "1d3JEMlXSMaUu5BRfhPMxnyB5E1tlG16H6hVhL8iaETI";
-const BRAND_NAME = "ICU Stock Management";
-const LOGO_URL = "https://drive.google.com/uc?export=view&id=1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO";
-const ROLES = { ADMIN: "Admin", RN: "RN", PN: "PN" };
+const APP_NAME = "ICU Stock Management";
+const TIMEZONE = "Asia/Bangkok";
+const LOCALE = "th-TH";
+const API_BASE_URL = (window.API_BASE_URL && String(window.API_BASE_URL)) || "<PUT_WEB_APP_EXEC_URL_HERE>";
 
-const EXPIRY_THRESHOLDS_DEFAULT = { critical: 30, warning: 60, caution: 180 };
-
-const SHEETS = {
-  INVENTORY: "Inventory",
-  STAFF: "Staff",
-  SETTINGS: "Settings",
-  EMAIL_RECIPIENTS: "Email Recipients",
-  DAILY_CHECK_SUPPLY: "Daily Check Supply",
-  DAILY_CHECK_MEDICINE: "Daily Check Medicine",
-  USAGE_LOGS: "Usage Logs",
-  EXPIRED_ITEMS: "Expired Items",
-  REORDER_ITEMS: "Reorder Items",
-  SHIFT_SUMMARY: "Shift Summary",
-  AUDIT_LOGS: "Audit Logs",
-  MOVEMENT_LOGS: "Movement Logs"
+const sessionKeys = {
+  staffId: "icu_staffId",
+  staffName: "icu_staffName",
+  role: "icu_role"
 };
 
-function doGet(e) {
-  const p = e && e.parameter ? e.parameter : {};
-  if (p.ping === "1") {
-    return jsonOut_({ success: true, message: "pong", brand: BRAND_NAME });
-  }
-  if (p.action) {
-    // allow GET for simple debug (optional)
-    try {
-      const payload = p.payload ? JSON.parse(p.payload) : {};
-      return dispatch_(String(p.action), payload);
-    } catch (err) {
-      return jsonOut_({ success: false, error: String(err && err.message ? err.message : err) });
-    }
-  }
-  return jsonOut_({ success: true, message: "ICU API is running. Use GET ?ping=1 or POST action/payload." });
+const state = {
+  staffId: "",
+  staffName: "",
+  role: "",
+  activeTab: "inventory",
+  inventory: [],
+  cabinets: []
+};
+
+const el = (id) => document.getElementById(id);
+
+function setLoading(on) {
+  el("loadingOverlay").hidden = !on;
 }
 
-function doPost(e) {
-  try {
-    const p = e && e.parameter ? e.parameter : {};
-    const action = String(p.action || "").trim();
-    const payload = p.payload ? JSON.parse(p.payload) : {};
-
-    if (!action) return jsonOut_({ success: false, error: "Missing action" });
-    return dispatch_(action, payload);
-  } catch (err) {
-    return jsonOut_({ success: false, error: String(err && err.message ? err.message : err) });
-  }
+function showMsg(title, bodyHtml) {
+  el("msgTitle").textContent = title;
+  el("msgBody").innerHTML = bodyHtml;
+  el("msgModal").hidden = false;
 }
 
-function dispatch_(action, payload) {
-  const map = {
-    initializeSheets: () => initializeSheets_(),
-    verifyLogin: () => verifyLogin_(payload.staffId, payload.password),
-
-    getSnapshot: () => getSnapshot_(payload),
-
-    loadInventory: () => loadInventory_(payload.category || null),
-
-    saveInventoryItem: () => saveInventoryItem_(payload.itemData, payload.staffId, payload.role),
-    deleteItem: () => deleteItem_(payload.id, payload.staffId, payload.role),
-
-    uploadItemImage: () => uploadItemImage_(payload, payload.staffId, payload.role),
-
-    saveDailyCheckEx: () => saveDailyCheckEx_(payload.checkType, payload.records || [], payload.staffId, payload.role),
-
-    loadStaff: () => loadStaff_(payload.staffId, payload.role),
-    addStaff: () => addStaff_(payload.userData, payload.staffId, payload.role),
-    updateStaff: () => updateStaff_(payload.userData, payload.staffId, payload.role),
-    deleteStaff: () => deleteStaff_(payload.staffIdToDelete, payload.staffId, payload.role),
-
-    loadUsageLogs: () => loadUsageLogs_(),
-    recordUsage: () => recordUsage_(payload.usageData, payload.staffId),
-
-    loadShiftSummary: () => loadShiftSummary_(),
-    saveShiftSummary: () => saveShiftSummary_(payload.record, payload.staffId),
-
-    loadEmailRecipients: () => loadEmailRecipients_(),
-    updateEmailRecipients: () => updateEmailRecipients_(payload.emails || [], payload.staffId, payload.role),
-
-    updateExpiryThresholds: () => updateExpiryThresholds_(payload.thresholds, payload.staffId, payload.role),
-
-    sendReportManually: () => sendReportManually_(payload.staffId, payload.role),
-    sendExpirySummaryEmail: () => sendExpirySummaryEmail_(payload.staffId, payload.role),
-
-    backupData: () => backupData_(payload.staffId, payload.role),
-    getSystemStatus: () => getSystemStatus_()
-  };
-
-  if (!map[action]) return jsonOut_({ success: false, error: "Unknown action: " + action });
-
-  const result = map[action]();
-  return jsonOut_(result);
+function hideMsg() {
+  el("msgModal").hidden = true;
 }
 
-/* ---------- Core helpers ---------- */
-function ss_() { return SpreadsheetApp.openById(SPREADSHEET_ID); }
-function ensureSheet_(name) {
-  const ss = ss_();
-  let sh = ss.getSheetByName(name);
-  if (!sh) sh = ss.insertSheet(name);
-  return sh;
-}
-function jsonOut_(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-function logAudit_(staffId, action, details) {
-  try {
-    const sh = ensureSheet_(SHEETS.AUDIT_LOGS);
-    sh.appendRow([new Date(), staffId || "", action, details || ""]);
-  } catch (_) {}
+function uuidv4() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
 
-function initializeSheets_() {
-  const configs = [
-    { name: SHEETS.INVENTORY, headers: ["รายการ","Lot No","จำนวน","Minimum Stock","วันที่หมดอายุ","หมายเหตุ","ตู้","Category","Image URL"] },
-    { name: SHEETS.DAILY_CHECK_SUPPLY, headers: ["วันที่","รายการ","Lot No","จำนวนที่ตรวจ","รอบ","StaffID","ชื่อ","สถานะ","Timestamp"] },
-    { name: SHEETS.DAILY_CHECK_MEDICINE, headers: ["วันที่","รายการ","Lot No","จำนวนที่ตรวจ","รอบ","StaffID","ชื่อ","สถานะ","Timestamp"] },
-    { name: SHEETS.USAGE_LOGS, headers: ["วันที่","รายการ","Lot No","จำนวนที่เบิก","ผู้เบิก","Timestamp"] },
-    { name: SHEETS.EXPIRED_ITEMS, headers: ["รายการ","Lot No","จำนวน","วันที่หมดอายุ","สถานะ"] },
-    { name: SHEETS.REORDER_ITEMS, headers: ["รายการ","จำนวนรวม","Minimum Stock","จำนวนที่ต้องสั่ง"] },
-    { name: SHEETS.SHIFT_SUMMARY, headers: ["วันที่","รอบ","StaffID","ชื่อ","รายละเอียด","Timestamp"] },
-    { name: SHEETS.STAFF, headers: ["StaffID","ชื่อ","Password","Role"], defaultData: [["admin","Admin User","admin123",ROLES.ADMIN]] },
-    { name: SHEETS.EMAIL_RECIPIENTS, headers: ["อีเมลผู้รับ"] },
-    { name: SHEETS.SETTINGS, headers: ["Key","Value"], defaultData: [
-      ["ExpiryThresholdCritical", String(EXPIRY_THRESHOLDS_DEFAULT.critical)],
-      ["ExpiryThresholdWarning", String(EXPIRY_THRESHOLDS_DEFAULT.warning)],
-      ["ExpiryThresholdCaution", String(EXPIRY_THRESHOLDS_DEFAULT.caution)]
-    ] },
-    { name: SHEETS.AUDIT_LOGS, headers: ["Timestamp","StaffID","Action","Details"] },
-    { name: SHEETS.MOVEMENT_LOGS, headers: ["Date","Type","รายการ","Lot No","QtyChange","QtyAfter","StaffID","Timestamp"] }
-  ];
+function formatDisplayDate(ymd) {
+  // ymd -> DD/MM/YYYY (Gregorian)
+  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd || "";
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dd = String(d).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return `${dd}/${mm}/${y}`;
+}
 
-  configs.forEach(cfg => {
-    const sh = ensureSheet_(cfg.name);
-    const lastCol = Math.max(1, sh.getLastColumn());
-    const existing = sh.getRange(1,1,1,lastCol).getValues()[0] || [];
-    const hasHeader = existing.filter(x => x).length > 0;
+function todayYmd() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${da}`;
+}
 
-    if (!hasHeader) {
-      sh.getRange(1,1,1,cfg.headers.length).setValues([cfg.headers]).setFontWeight("bold").setBackground("#f0f2f5");
-      if (cfg.defaultData && sh.getLastRow() <= 1) {
-        sh.getRange(2,1,cfg.defaultData.length,cfg.headers.length).setValues(cfg.defaultData);
-      }
-    } else {
-      const missing = cfg.headers.filter(h => !existing.includes(h));
-      if (missing.length) {
-        const start = existing.filter(x => x).length + 1;
-        sh.getRange(1,start,1,missing.length).setValues([missing]).setFontWeight("bold").setBackground("#f0f2f5");
-      }
-    }
+/** =========================
+ * API CLIENT (timeout + retry)
+ * ========================= */
+async function apiCall(action, payload = {}, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 15000;
+  const retries = opts.retries ?? 1;
+
+  const requestId = uuidv4();
+  const clientTime = new Date().toISOString();
+
+  const body = JSON.stringify({
+    action,
+    payload,
+    requestId,
+    clientTime
   });
 
-  logAudit_("system","Initialize","Initialized sheets");
-  return { success: true, message: "Initialize sheets done" };
+  let lastErr = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(API_BASE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body,
+        signal: controller.signal
+      });
+
+      const text = await res.text();
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch (e) {
+        throw new Error(
+          `Response is not valid JSON. HTTP ${res.status}. ` +
+          `This is often a CORS / deployment issue.\n\n` +
+          `Raw response (first 300 chars):\n${text.slice(0, 300)}`
+        );
+      }
+
+      if (!json || typeof json.success !== "boolean") {
+        throw new Error("Malformed API envelope. Missing success field.");
+      }
+
+      if (!json.success) {
+        const rid = json.requestId ? ` (requestId: ${json.requestId})` : "";
+        const err = json.error || "ERROR";
+        const details = json.details ? `<pre class="pre">${escapeHtml(JSON.stringify(json.details, null, 2))}</pre>` : "";
+        const msg = `API error: ${escapeHtml(err)}${rid}${details}`;
+        const e2 = new Error(msg);
+        e2._api = json;
+        throw e2;
+      }
+
+      return json;
+    } catch (err) {
+      lastErr = err;
+
+      // Retry only for network/timeout-like failures
+      const isAbort = (err && err.name === "AbortError");
+      const isNetwork = (err && String(err.message || "").toLowerCase().includes("failed to fetch"));
+      const shouldRetry = attempt < retries && (isAbort || isNetwork);
+
+      if (shouldRetry) {
+        await sleep(500 * (attempt + 1));
+        continue;
+      }
+
+      // add requestId to thrown errors
+      err.requestId = requestId;
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw lastErr || new Error("Unknown API error");
 }
 
-/* ---------- Auth ---------- */
-function verifyLogin_(staffId, password) {
-  staffId = String(staffId || "").trim();
-  password = String(password || "").trim();
-  if (!staffId || !password) return { success: false, error: "กรุณากรอก StaffID และ Password" };
-
-  const sh = ensureSheet_(SHEETS.STAFF);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return { success: false, error: "ไม่มีข้อมูล Staff (ให้รัน initializeSheets)" };
-
-  const headers = data[0];
-  const cId = headers.indexOf("StaffID");
-  const cName = headers.indexOf("ชื่อ");
-  const cPass = headers.indexOf("Password");
-  const cRole = headers.indexOf("Role");
-
-  const row = data.slice(1).find(r =>
-    String(r[cId] || "").trim().toLowerCase() === staffId.toLowerCase() &&
-    String(r[cPass] || "").trim() === password
-  );
-  if (!row) return { success: false, error: "StaffID หรือ Password ไม่ถูกต้อง" };
-
-  const role = String(row[cRole] || "").trim();
-  if (![ROLES.ADMIN, ROLES.RN, ROLES.PN].includes(role)) return { success: false, error: "Role ไม่ถูกต้อง" };
-
-  logAudit_(staffId, "Login", "success");
-  return { success: true, data: { staffId: String(row[cId]).trim(), staffName: String(row[cName]).trim(), role } };
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
-function requireAdmin_(role) {
-  if (String(role) !== ROLES.ADMIN) throw new Error("ต้องมีสิทธิ์ Admin");
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
 }
 
-/* ---------- Snapshot ---------- */
-function getSnapshot_(payload) {
-  // optional: validate role by checking staff sheet
-  checkReorderItems_();
-  checkExpiredItems_();
-
-  const inv = loadInventory_(null).data;
-  const reorder = loadReorderItems_().data;
-  const expired = loadExpiredItems_().data;
-  const staff = loadStaff_(payload.staffId, payload.role).data || [];
-  const emails = loadEmailRecipients_().data || [];
-  const cabinets = getCabinetList_(inv);
-
-  const usageLogs = loadUsageLogs_().data || [];
-  const shiftSummary = loadShiftSummary_().data || [];
-  const backupInfo = getBackupInfo_();
-  const settings = loadSettings_();
-
-  return {
-    success: true,
-    data: { inventory: inv, reorder, expired, staff, emailRecipients: emails, cabinets, usageLogs, shiftSummary, backupInfo, settings }
-  };
+/** =========================
+ * SESSION
+ * ========================= */
+function loadSession() {
+  state.staffId = sessionStorage.getItem(sessionKeys.staffId) || "";
+  state.staffName = sessionStorage.getItem(sessionKeys.staffName) || "";
+  state.role = sessionStorage.getItem(sessionKeys.role) || "";
 }
 
-/* ---------- Inventory ---------- */
-function loadInventory_(categoryFilter) {
-  const sh = ensureSheet_(SHEETS.INVENTORY);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return { success: true, data: [] };
+function saveSession(staffId, staffName, role) {
+  sessionStorage.setItem(sessionKeys.staffId, staffId);
+  sessionStorage.setItem(sessionKeys.staffName, staffName);
+  sessionStorage.setItem(sessionKeys.role, role);
+  loadSession();
+}
 
-  const headers = data[0];
+function clearSession() {
+  sessionStorage.removeItem(sessionKeys.staffId);
+  sessionStorage.removeItem(sessionKeys.staffName);
+  sessionStorage.removeItem(sessionKeys.role);
+  loadSession();
+}
 
-  const out = data.slice(1).map((row, idx) => {
-    const item = { id: idx + 2 };
-    headers.forEach((h, c) => {
-      const v = row[c];
-      if (h === "รายการ") item.name = String(v || "").trim();
-      else if (h === "Lot No") item.lotNo = String(v || "").trim();
-      else if (h === "จำนวน") item.quantity = parseInt(v,10) || 0;
-      else if (h === "Minimum Stock") item.minimumStock = parseInt(v,10) || 5;
-      else if (h === "วันที่หมดอายุ") item.expiryDate = formatDateForDisplay_(v);
-      else if (h === "หมายเหตุ") item.note = String(v || "").trim();
-      else if (h === "ตู้") item.cabinet = String(v || "").trim();
-      else if (h === "Category") item.category = String(v || "").trim();
-      else if (h === "Image URL") item.imageUrl = String(v || "").trim();
+/** =========================
+ * UI BOOT
+ * ========================= */
+function setLoggedInUI(on) {
+  el("loginView").hidden = on;
+  el("appView").hidden = !on;
+  el("userBox").hidden = !on;
+
+  if (on) {
+    el("userName").textContent = state.staffName || state.staffId;
+    el("userRole").textContent = state.role || "";
+  }
+}
+
+function buildTabs() {
+  const tabs = [
+    { id: "inventory", label: "Inventory" },
+    { id: "daily", label: "Daily Check" },
+    { id: "reorder", label: "Reorder" },
+    { id: "expired", label: "Expired" },
+    { id: "shift", label: "Shift Summary" },
+    { id: "usage", label: "Usage" }
+  ];
+
+  if (state.role === "Admin") {
+    tabs.push({ id: "admin", label: "Report / Settings" });
+  }
+
+  const container = el("tabs");
+  container.innerHTML = "";
+  tabs.forEach(t => {
+    const b = document.createElement("button");
+    b.className = "tab" + (state.activeTab === t.id ? " active" : "");
+    b.textContent = t.label;
+    b.onclick = () => {
+      state.activeTab = t.id;
+      buildTabs();
+      renderActiveTab();
+    };
+    container.appendChild(b);
+  });
+}
+
+function setPanelTitle(title) {
+  el("panelTitle").textContent = title;
+}
+
+function setPanelActions(nodes) {
+  const pa = el("panelActions");
+  pa.innerHTML = "";
+  (nodes || []).forEach(n => pa.appendChild(n));
+}
+
+function setPanelBody(html) {
+  el("panelBody").innerHTML = html;
+}
+
+/** =========================
+ * LOGIN FLOW
+ * ========================= */
+async function onLogin() {
+  const staffId = el("loginStaffId").value.trim();
+  const password = el("loginPassword").value;
+
+  if (!staffId || !password) {
+    showMsg("Login", "กรุณากรอก StaffID และ Password");
+    return;
+  }
+
+  setLoading(true);
+  try {
+    const res = await apiCall("verifyLogin", { staffId, password }, { timeoutMs: 15000, retries: 1 });
+    const data = res.data;
+    saveSession(data.staffId, data.staffName, data.role);
+
+    setLoggedInUI(true);
+    buildTabs();
+    await primeData();
+    await renderActiveTab();
+  } catch (err) {
+    showMsg("Login failed", `<div class="error">${escapeHtml(err.message || String(err))}</div>`);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onFirstTimeInit() {
+  setLoading(true);
+  el("loginInfo").hidden = true;
+  try {
+    const res = await apiCall("initializeSheets", {}, { timeoutMs: 30000, retries: 0 });
+    const b = [];
+    b.push(`<div class="ok">Initialize complete.</div>`);
+    if (res.data && res.data.bootstrapAdmin && res.data.bootstrapAdmin.created) {
+      b.push(`<div class="warn"><b>Default Admin Created</b><br/>StaffID: <b>${escapeHtml(res.data.bootstrapAdmin.staffId)}</b><br/>Password: <b>${escapeHtml(res.data.bootstrapAdmin.password)}</b><br/>${escapeHtml(res.data.bootstrapAdmin.note || "")}</div>`);
+    } else {
+      b.push(`<div class="info">Sheets created/ensured. If Staff already exists, please login with existing Admin.</div>`);
+    }
+    el("loginInfo").innerHTML = b.join("");
+    el("loginInfo").hidden = false;
+  } catch (err) {
+    el("loginInfo").innerHTML = `<div class="error">${escapeHtml(err.message || String(err))}</div>`;
+    el("loginInfo").hidden = false;
+  } finally {
+    setLoading(false);
+  }
+}
+
+/** =========================
+ * DATA PRIMING
+ * ========================= */
+async function primeData() {
+  // Prime cabinet list + inventory cache
+  await refreshCabinets();
+  await refreshInventory();
+}
+
+async function refreshInventory() {
+  const res = await apiCall("loadInventory", authPayload({}), { timeoutMs: 20000, retries: 1 });
+  state.inventory = (res.data && res.data.items) ? res.data.items : [];
+}
+
+async function refreshCabinets() {
+  const res = await apiCall("getCabinetList", authPayload({}), { timeoutMs: 15000, retries: 1 });
+  state.cabinets = (res.data && res.data.cabinets) ? res.data.cabinets : [];
+}
+
+function authPayload(extra) {
+  return Object.assign({}, extra || {}, { staffId: state.staffId, role: state.role });
+}
+
+/** =========================
+ * RENDER TABS
+ * ========================= */
+async function renderActiveTab() {
+  if (state.activeTab === "inventory") return renderInventoryTab();
+  if (state.activeTab === "daily") return renderDailyTab();
+  if (state.activeTab === "reorder") return renderReorderTab();
+  if (state.activeTab === "expired") return renderExpiredTab();
+  if (state.activeTab === "shift") return renderShiftTab();
+  if (state.activeTab === "usage") return renderUsageTab();
+  if (state.activeTab === "admin") return renderAdminTab();
+}
+
+/** Inventory */
+async function renderInventoryTab() {
+  setPanelTitle("Inventory");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => {
+      await refreshCabinets();
+      await refreshInventory();
+      await renderInventoryTab();
+    });
+  });
+
+  setPanelActions([btnRefresh]);
+
+  await withLoading(async () => { await refreshInventory(); });
+
+  const canEdit = (state.role === "Admin");
+
+  const rows = state.inventory.map(it => {
+    const exp = it.expiryDate ? formatDisplayDate(it.expiryDate) : "";
+    const actions = canEdit
+      ? `<div class="row gap">
+           <button class="btn btn-sm" data-act="edit" data-id="${it.rowNumber}">Edit</button>
+           <button class="btn btn-sm btn-danger" data-act="del" data-id="${it.rowNumber}">Delete</button>
+         </div>`
+      : `<span class="muted">View only</span>`;
+
+    return `<tr>
+      <td>${escapeHtml(it.item)}</td>
+      <td>${escapeHtml(it.lotNo)}</td>
+      <td class="num">${escapeHtml(it.qty)}</td>
+      <td class="num">${escapeHtml(it.minStock)}</td>
+      <td>${escapeHtml(exp)}</td>
+      <td>${escapeHtml(it.note || "")}</td>
+      <td>${escapeHtml(it.cabinet || "")}</td>
+      <td>${escapeHtml(it.category || "")}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join("");
+
+  const form = canEdit ? renderInventoryForm() : `<div class="hint">RN/PN สามารถดูรายการได้ แต่แก้ไข Inventory ได้เฉพาะ Admin</div>`;
+
+  setPanelBody(`
+    ${form}
+    <div class="tablewrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>รายการ</th><th>Lot No</th><th class="num">จำนวน</th><th class="num">Minimum Stock</th>
+            <th>วันที่หมดอายุ</th><th>หมายเหตุ</th><th>ตู้</th><th>Category</th><th>Action</th>
+          </tr>
+        </thead>
+        <tbody>${rows || `<tr><td colspan="9" class="muted">No data</td></tr>`}</tbody>
+      </table>
+    </div>
+  `);
+
+  if (canEdit) {
+    // attach edit/delete handlers
+    el("panelBody").querySelectorAll("button[data-act]").forEach(b => {
+      b.onclick = async () => {
+        const act = b.getAttribute("data-act");
+        const id = Number(b.getAttribute("data-id"));
+        if (act === "del") return onDeleteInventory(id);
+        if (act === "edit") return onEditInventory(id);
+      };
     });
 
-    item.expiryDays = calculateExpiryDays_(item.expiryDate);
-    return item;
-  }).filter(x => x.name && (!categoryFilter || x.category === categoryFilter));
-
-  return { success: true, data: out };
-}
-
-function saveInventoryItem_(itemData, staffId, role) {
-  requireAdmin_(role);
-
-  const errors = [];
-  if (!itemData || !String(itemData.name||"").trim()) errors.push("ชื่อรายการห้ามว่าง");
-  if (!String(itemData.lotNo||"").trim()) errors.push("Lot No ห้ามว่าง");
-  if (errors.length) return { success: false, error: errors.join("\n") };
-
-  const sh = ensureSheet_(SHEETS.INVENTORY);
-  const data = sh.getDataRange().getValues();
-  const headers = data[0];
-  const idxLot = headers.indexOf("Lot No");
-  const idxQty = headers.indexOf("จำนวน");
-
-  const rowData = [
-    itemData.name || "",
-    itemData.lotNo || "",
-    parseInt(itemData.quantity,10) || 0,
-    parseInt(itemData.minimumStock,10) || 5,
-    itemData.expiryDate ? parseDateForStorage_(itemData.expiryDate) : "",
-    itemData.note || "",
-    itemData.cabinet || "",
-    itemData.category || "Medical Supply",
-    itemData.imageUrl || ""
-  ];
-
-  if (itemData.id) {
-    const rowIndex = parseInt(itemData.id,10);
-    // movement diff
-    const old = sh.getRange(rowIndex,1,1,headers.length).getValues()[0];
-    const oldQty = parseInt(old[idxQty],10) || 0;
-    const newQty = parseInt(itemData.quantity,10) || 0;
-    const diff = newQty - oldQty;
-
-    // prevent dup lot except itself
-    const dup = data.slice(1).find((r,i) => String(r[idxLot]||"").trim() === String(itemData.lotNo||"").trim() && (i+2)!==rowIndex);
-    if (dup) return { success: false, error: `Lot No "${itemData.lotNo}" มีอยู่แล้ว` };
-
-    sh.getRange(rowIndex,1,1,rowData.length).setValues([rowData]);
-    logAudit_(staffId, "Update Item", `${itemData.name} (${itemData.lotNo})`);
-
-    if (diff !== 0) appendMovement_(diff > 0 ? "IN" : "ADJUST", itemData.name, itemData.lotNo, diff, newQty, staffId);
-  } else {
-    // prevent dup lot
-    const dup = data.slice(1).find(r => String(r[idxLot]||"").trim() === String(itemData.lotNo||"").trim());
-    if (dup) return { success: false, error: `Lot No "${itemData.lotNo}" มีอยู่แล้ว` };
-
-    sh.appendRow(rowData);
-    const qty = parseInt(itemData.quantity,10) || 0;
-    if (qty) appendMovement_("IN", itemData.name, itemData.lotNo, qty, qty, staffId);
-    logAudit_(staffId, "Add Item", `${itemData.name} (${itemData.lotNo})`);
+    el("invCancelEdit")?.addEventListener("click", () => clearInvForm());
+    el("invSave")?.addEventListener("click", () => onSaveInventory());
   }
-
-  checkReorderItems_();
-  checkExpiredItems_();
-  return { success: true, message: "บันทึกสำเร็จ" };
 }
 
-function deleteItem_(id, staffId, role) {
-  requireAdmin_(role);
-  const sh = ensureSheet_(SHEETS.INVENTORY);
-  const rowIndex = parseInt(id,10);
-  if (!rowIndex || rowIndex < 2) return { success: false, error: "ID ไม่ถูกต้อง" };
-  const row = sh.getRange(rowIndex,1,1,sh.getLastColumn()).getValues()[0];
-  sh.deleteRow(rowIndex);
-  logAudit_(staffId, "Delete Item", `${row[0]} (${row[1]})`);
-  checkReorderItems_();
-  checkExpiredItems_();
-  return { success: true, message: "ลบสำเร็จ" };
+function renderInventoryForm() {
+  const cabinetOptions = [`<option value="">(เลือก/พิมพ์)</option>`]
+    .concat(state.cabinets.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`))
+    .join("");
+
+  return `
+    <div class="card inner">
+      <h3>เพิ่ม/แก้ไขรายการ (Admin)</h3>
+      <input type="hidden" id="invRowNumber" />
+      <div class="grid4">
+        <label><div class="label">รายการ</div><input id="invItem" type="text" /></label>
+        <label><div class="label">Lot No</div><input id="invLot" type="text" /></label>
+        <label><div class="label">จำนวน</div><input id="invQty" type="number" min="0" step="1" value="0" /></label>
+        <label><div class="label">Minimum Stock</div><input id="invMin" type="number" min="0" step="1" value="0" /></label>
+
+        <label><div class="label">วันที่หมดอายุ</div><input id="invExp" type="date" /></label>
+        <label><div class="label">ตู้</div>
+          <input id="invCabinet" list="cabList" placeholder="เช่น A1" />
+          <datalist id="cabList">${state.cabinets.map(c => `<option value="${escapeHtml(c)}"></option>`).join("")}</datalist>
+        </label>
+        <label><div class="label">Category</div>
+          <select id="invCat">
+            <option value="">(เลือก)</option>
+            <option value="Medicine">Medicine</option>
+            <option value="Medical Supply">Medical Supply</option>
+          </select>
+        </label>
+        <label><div class="label">หมายเหตุ</div><input id="invNote" type="text" /></label>
+      </div>
+      <div class="row gap">
+        <button class="btn" id="invSave" type="button">Save</button>
+        <button class="btn btn-secondary" id="invCancelEdit" type="button">Clear</button>
+      </div>
+      <div class="hint">หมายเหตุ: Category ใช้สำหรับ RBAC ของ Daily Check (RN=Medicine, PN=Medical Supply)</div>
+    </div>
+  `;
 }
 
-/* ---------- Image Upload ---------- */
-function uploadItemImage_(payload, staffId, role) {
-  requireAdmin_(role);
-  const base64 = String(payload.base64 || "");
-  if (!base64) return { success: false, error: "ไม่มีข้อมูลรูปภาพ" };
-
-  const filename = String(payload.filename || "item.jpg");
-  const mimeType = String(payload.mimeType || "image/jpeg");
-  const bytes = Utilities.base64Decode(base64);
-  const blob = Utilities.newBlob(bytes, mimeType, filename);
-
-  const folder = getOrCreateImageFolder_();
-  const file = folder.createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  const url = `https://drive.google.com/uc?export=view&id=${file.getId()}`;
-
-  logAudit_(staffId, "Upload Image", `${filename}`);
-  return { success: true, data: { imageUrl: url } };
+function clearInvForm() {
+  el("invRowNumber").value = "";
+  el("invItem").value = "";
+  el("invLot").value = "";
+  el("invQty").value = "0";
+  el("invMin").value = "0";
+  el("invExp").value = "";
+  el("invNote").value = "";
+  el("invCabinet").value = "";
+  el("invCat").value = "";
 }
-function getOrCreateImageFolder_() {
-  const props = PropertiesService.getScriptProperties();
-  const existingId = props.getProperty("ITEM_IMAGE_FOLDER_ID");
-  if (existingId) {
-    try { return DriveApp.getFolderById(existingId); } catch (_) {}
+
+async function onEditInventory(rowNumber) {
+  const it = state.inventory.find(x => Number(x.rowNumber) === Number(rowNumber));
+  if (!it) return;
+
+  el("invRowNumber").value = String(it.rowNumber);
+  el("invItem").value = it.item || "";
+  el("invLot").value = it.lotNo || "";
+  el("invQty").value = String(it.qty ?? 0);
+  el("invMin").value = String(it.minStock ?? 0);
+  el("invExp").value = it.expiryDate || "";
+  el("invNote").value = it.note || "";
+  el("invCabinet").value = it.cabinet || "";
+  el("invCat").value = it.category || "";
+  showMsg("Edit", "โหลดข้อมูลเข้าฟอร์มแล้ว (แก้ไขและกด Save)");
+}
+
+async function onSaveInventory() {
+  const itemData = {
+    rowNumber: el("invRowNumber").value ? Number(el("invRowNumber").value) : undefined,
+    item: el("invItem").value.trim(),
+    lotNo: el("invLot").value.trim(),
+    qty: Number(el("invQty").value),
+    minStock: Number(el("invMin").value),
+    expiryDate: el("invExp").value || "",
+    note: el("invNote").value.trim(),
+    cabinet: el("invCabinet").value.trim(),
+    category: el("invCat").value
+  };
+
+  await withLoading(async () => {
+    await apiCall("saveInventoryItem", authPayload({ itemData }), { timeoutMs: 30000, retries: 1 });
+    await refreshCabinets();
+    await refreshInventory();
+    clearInvForm();
+    await renderInventoryTab();
+  });
+
+  showMsg("Saved", "บันทึกเรียบร้อย");
+}
+
+async function onDeleteInventory(rowNumber) {
+  const ok = confirm(`Delete inventory row ${rowNumber}?`);
+  if (!ok) return;
+
+  await withLoading(async () => {
+    await apiCall("deleteItem", authPayload({ id: rowNumber }), { timeoutMs: 30000, retries: 1 });
+    await refreshInventory();
+    await renderInventoryTab();
+  });
+
+  showMsg("Deleted", "ลบเรียบร้อย");
+}
+
+/** Daily Check */
+async function renderDailyTab() {
+  setPanelTitle("Daily Check");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => {
+      await refreshInventory();
+      await renderDailyTab();
+    });
+  });
+
+  setPanelActions([btnRefresh]);
+
+  await withLoading(async () => { await refreshInventory(); });
+
+  const role = state.role;
+  const type = (role === "RN") ? "Medicine" : (role === "PN") ? "Supply" : "Supply";
+
+  const body = `
+    <div class="card inner">
+      <h3>บันทึกการตรวจประจำเวร</h3>
+      <div class="grid3">
+        <label><div class="label">วันที่</div><input id="dcDate" type="date" value="${todayYmd()}" /></label>
+        <label><div class="label">รอบ</div>
+          <select id="dcRound">
+            <option value="Day">Day</option>
+            <option value="Night">Night</option>
+            <option value="Other">Other</option>
+          </select>
+        </label>
+        <label><div class="label">ประเภท</div>
+          ${role === "Admin" ? `
+            <select id="dcType">
+              <option value="Supply">Supply (Medical Supply)</option>
+              <option value="Medicine">Medicine</option>
+            </select>
+          ` : `
+            <input id="dcType" type="text" value="${escapeHtml(type)}" disabled />
+          `}
+        </label>
+      </div>
+      <div class="hint">
+        RN ตรวจได้เฉพาะ Category=Medicine • PN ตรวจได้เฉพาะ Category=Medical Supply • Admin เลือกประเภทได้
+      </div>
+      <div class="row gap">
+        <button class="btn" id="dcSave" type="button">Save Daily Check</button>
+      </div>
+    </div>
+
+    ${renderDailyCheckTable(type)}
+  `;
+
+  setPanelBody(body);
+
+  if (role === "Admin") el("dcType").value = "Supply";
+
+  el("dcSave").onclick = async () => {
+    const date = el("dcDate").value;
+    const round = el("dcRound").value;
+    const t = (role === "Admin") ? el("dcType").value : type;
+
+    const checks = [];
+    document.querySelectorAll("input[data-dc='qty']").forEach(inp => {
+      const item = inp.getAttribute("data-item");
+      const lotNo = inp.getAttribute("data-lot");
+      const checkedQty = Number(inp.value);
+      const st = document.querySelector(`select[data-dc='status'][data-item='${cssEsc(item)}'][data-lot='${cssEsc(lotNo)}']`);
+      const status = st ? st.value : "OK";
+      // include all rows; backend validates >=0
+      checks.push({ item, lotNo, checkedQty, status });
+    });
+
+    await withLoading(async () => {
+      await apiCall("saveDailyCheck", authPayload({ date, round, type: (t === "Medicine" ? "Medicine" : "Supply"), checks }), { timeoutMs: 30000, retries: 1 });
+    });
+
+    showMsg("Saved", "บันทึก Daily Check เรียบร้อย");
+  };
+}
+
+function renderDailyCheckTable(type) {
+  // Filter inventory by required category
+  const wantCategory =
+    (state.role === "RN") ? "Medicine" :
+    (state.role === "PN") ? "Medical Supply" :
+    (type === "Medicine") ? "Medicine" : "Medical Supply";
+
+  const items = state.inventory.filter(it => String(it.category || "") === wantCategory);
+
+  const rows = items.map(it => {
+    const exp = it.expiryDate ? formatDisplayDate(it.expiryDate) : "";
+    const itemEsc = escapeHtml(it.item);
+    const lotEsc = escapeHtml(it.lotNo);
+    return `<tr>
+      <td>${itemEsc}</td>
+      <td>${lotEsc}</td>
+      <td>${escapeHtml(it.cabinet || "")}</td>
+      <td>${escapeHtml(exp)}</td>
+      <td class="num">${escapeHtml(it.qty)}</td>
+      <td class="num">
+        <input class="in-sm" data-dc="qty" data-item="${escapeHtmlAttr(it.item)}" data-lot="${escapeHtmlAttr(it.lotNo)}" type="number" min="0" step="1" value="${escapeHtmlAttr(it.qty)}" />
+      </td>
+      <td>
+        <select class="in-sm" data-dc="status" data-item="${escapeHtmlAttr(it.item)}" data-lot="${escapeHtmlAttr(it.lotNo)}">
+          <option value="OK">OK</option>
+          <option value="LOW">LOW</option>
+          <option value="MISSING">MISSING</option>
+          <option value="EXPIRED">EXPIRED</option>
+        </select>
+      </td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="tablewrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>รายการ</th><th>Lot No</th><th>ตู้</th><th>หมดอายุ</th><th class="num">คงเหลือ</th><th class="num">จำนวนที่ตรวจ</th><th>สถานะ</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows || `<tr><td colspan="7" class="muted">No items for category: ${escapeHtml(wantCategory)}</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+/** Reorder */
+async function renderReorderTab() {
+  setPanelTitle("Reorder Items");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => { await renderReorderTab(); });
+  });
+  setPanelActions([btnRefresh]);
+
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadReorderItems", authPayload({}), { timeoutMs: 30000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.items || []).map(it => `
+    <tr>
+      <td>${escapeHtml(it.item)}</td>
+      <td class="num">${escapeHtml(it.totalQty)}</td>
+      <td class="num">${escapeHtml(it.minStock)}</td>
+      <td class="num"><b>${escapeHtml(it.reorderQty)}</b></td>
+    </tr>
+  `).join("");
+
+  setPanelBody(`
+    <div class="hint">ระบบคำนวณจาก Inventory (รวมจำนวนต่อ “รายการ”) และซิงก์ไปยังชีต “Reorder Items”</div>
+    <div class="tablewrap">
+      <table class="table">
+        <thead><tr><th>รายการ</th><th class="num">จำนวนรวม</th><th class="num">Minimum Stock</th><th class="num">จำนวนที่ต้องสั่ง</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4" class="muted">No reorder needed</td></tr>`}</tbody>
+      </table>
+    </div>
+  `);
+}
+
+/** Expired */
+async function renderExpiredTab() {
+  setPanelTitle("Expired Items");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => { await renderExpiredTab(); });
+  });
+  setPanelActions([btnRefresh]);
+
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadExpiredItems", authPayload({}), { timeoutMs: 30000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.items || []).map(it => `
+    <tr>
+      <td>${escapeHtml(it.item)}</td>
+      <td>${escapeHtml(it.lotNo)}</td>
+      <td class="num">${escapeHtml(it.qty)}</td>
+      <td>${escapeHtml(formatDisplayDate(it.expiryDate))}</td>
+      <td>${escapeHtml(it.status)}</td>
+    </tr>
+  `).join("");
+
+  const soon = (data.soonExpiring || []).slice(0, 20).map(x =>
+    `<li>${escapeHtml(x.item)} | Lot ${escapeHtml(x.lotNo)} | Exp ${escapeHtml(formatDisplayDate(x.expiryDate))} | Qty ${escapeHtml(x.qty)}</li>`
+  ).join("");
+
+  setPanelBody(`
+    <div class="hint">ระบบคำนวณจาก Inventory และซิงก์ไปยังชีต “Expired Items”</div>
+
+    <div class="tablewrap">
+      <table class="table">
+        <thead><tr><th>รายการ</th><th>Lot No</th><th class="num">จำนวน</th><th>วันที่หมดอายุ</th><th>สถานะ</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5" class="muted">No expired items</td></tr>`}</tbody>
+      </table>
+    </div>
+
+    <div class="card inner">
+      <h3>Expiring Soon (<= 30 days)</h3>
+      <ul>${soon || `<li class="muted">None</li>`}</ul>
+    </div>
+  `);
+}
+
+/** Shift Summary */
+async function renderShiftTab() {
+  setPanelTitle("Shift Summary");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => { await renderShiftTab(); });
+  });
+  setPanelActions([btnRefresh]);
+
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadShiftSummary", authPayload({}), { timeoutMs: 20000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.rows || []).slice().reverse().slice(0, 200).map(r => `
+    <tr>
+      <td>${escapeHtml(formatDisplayDate(r.date))}</td>
+      <td>${escapeHtml(r.round)}</td>
+      <td>${escapeHtml(r.time)}</td>
+      <td>${escapeHtml(r.inspector)}</td>
+    </tr>
+  `).join("");
+
+  setPanelBody(`
+    <div class="tablewrap">
+      <table class="table">
+        <thead><tr><th>วันที่</th><th>รอบ</th><th>เวลา</th><th>ผู้ตรวจสอบ</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4" class="muted">No data</td></tr>`}</tbody>
+      </table>
+    </div>
+  `);
+}
+
+/** Usage */
+async function renderUsageTab() {
+  setPanelTitle("Usage");
+
+  const btnRefresh = button("Refresh", async () => {
+    await withLoading(async () => {
+      await refreshInventory();
+      await renderUsageTab();
+    });
+  });
+  setPanelActions([btnRefresh]);
+
+  await withLoading(async () => { await refreshInventory(); });
+
+  const options = state.inventory.map(it => {
+    const label = `${it.item} | Lot ${it.lotNo} | Qty ${it.qty} | Exp ${it.expiryDate || "-"}`;
+    return `<option value="${escapeHtmlAttr(it.item)}||${escapeHtmlAttr(it.lotNo)}">${escapeHtml(label)}</option>`;
+  }).join("");
+
+  setPanelBody(`
+    <div class="card inner">
+      <h3>Record Usage</h3>
+      <div class="grid3">
+        <label><div class="label">วันที่</div><input id="useDate" type="date" value="${todayYmd()}" /></label>
+        <label><div class="label">รายการ/ล็อต</div>
+          <select id="useSel">
+            <option value="">(เลือก)</option>
+            ${options}
+          </select>
+        </label>
+        <label><div class="label">จำนวนที่เบิก</div><input id="useQty" type="number" min="1" step="1" value="1" /></label>
+        <label><div class="label">ผู้เบิก</div><input id="useRequester" type="text" value="${escapeHtmlAttr(state.staffName || state.staffId)}" /></label>
+      </div>
+      <div class="row gap">
+        <button class="btn" id="btnUseSave" type="button">Save Usage</button>
+      </div>
+      <div class="hint">ระบบจะตัดสต็อกจาก Inventory (ตาม item+lot) และเพิ่มบรรทัดใน “Usage Logs”</div>
+    </div>
+
+    <div id="usageLogs"></div>
+  `);
+
+  el("btnUseSave").onclick = async () => {
+    const date = el("useDate").value;
+    const sel = el("useSel").value;
+    const qtyUsed = Number(el("useQty").value);
+    const requester = el("useRequester").value.trim();
+
+    if (!sel) return showMsg("Usage", "กรุณาเลือกรายการ/ล็อต");
+    const [item, lotNo] = sel.split("||");
+
+    await withLoading(async () => {
+      await apiCall("recordUsage", authPayload({ usageData: { date, item, lotNo, qtyUsed, requester } }), { timeoutMs: 30000, retries: 1 });
+      await refreshInventory();
+      await renderUsageLogs();
+    });
+
+    showMsg("Saved", "บันทึกการเบิกเรียบร้อย");
+  };
+
+  await renderUsageLogs();
+}
+
+async function renderUsageLogs() {
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadUsageLogs", authPayload({}), { timeoutMs: 20000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.rows || []).slice().reverse().slice(0, 300).map(r => `
+    <tr>
+      <td>${escapeHtml(formatDisplayDate(r.date))}</td>
+      <td>${escapeHtml(r.item)}</td>
+      <td>${escapeHtml(r.lotNo)}</td>
+      <td class="num">${escapeHtml(r.qtyUsed)}</td>
+      <td>${escapeHtml(r.requester)}</td>
+      <td class="muted">${escapeHtml(r.timestamp)}</td>
+    </tr>
+  `).join("");
+
+  el("usageLogs").innerHTML = `
+    <div class="tablewrap">
+      <table class="table">
+        <thead><tr><th>วันที่</th><th>รายการ</th><th>Lot No</th><th class="num">จำนวนที่เบิก</th><th>ผู้เบิก</th><th>Timestamp</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="6" class="muted">No usage logs</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+/** Admin */
+async function renderAdminTab() {
+  setPanelTitle("Report / Settings (Admin)");
+
+  const btnStatus = button("System Status", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("getSystemStatus", authPayload({}), { timeoutMs: 20000, retries: 1 });
+      showMsg("System Status", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnSelfTest = button("debugSelfTest()", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("debugSelfTest", authPayload({}), { timeoutMs: 30000, retries: 0 });
+      showMsg("debugSelfTest", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnBackup = button("Backup Now", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("backupData", authPayload({}), { timeoutMs: 30000, retries: 0 });
+      showMsg("Backup", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnTrigger = button("Setup Trigger", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("setupDailyTrigger", authPayload({}), { timeoutMs: 30000, retries: 0 });
+      showMsg("Trigger", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnAutoEmail = button("Run autoCheckAndEmail()", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("autoCheckAndEmail", authPayload({}), { timeoutMs: 30000, retries: 0 });
+      showMsg("autoCheckAndEmail", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  const btnPdf = button("Generate PDF + Email", async () => {
+    await withLoading(async () => {
+      const res = await apiCall("generatePDFandEmail", authPayload({}), { timeoutMs: 60000, retries: 0 });
+      showMsg("PDF", `<pre class="pre">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`);
+    });
+  });
+
+  setPanelActions([btnStatus, btnSelfTest, btnBackup, btnTrigger, btnAutoEmail, btnPdf]);
+
+  const staffHtml = await renderStaffAdmin();
+  const emailHtml = await renderEmailAdmin();
+
+  setPanelBody(`
+    <div class="grid2">
+      <div>${staffHtml}</div>
+      <div>${emailHtml}</div>
+    </div>
+
+    <div class="card inner">
+      <h3>Notes (Security Hardening)</h3>
+      <ul class="hint">
+        <li>ปัจจุบันใช้ StaffID/Password แบบง่าย (hash ในชีต) — แนะนำเพิ่ม session token/HMAC และ expiry</li>
+        <li>จำกัดการ Deploy Web App ให้ “Anyone” เฉพาะกรณีจำเป็น และควบคุมการเข้าถึงเครือข่าย/โดเมน</li>
+        <li>พิจารณาแยก Spreadsheet ต่อหน่วยงานและใช้บัญชีบริการ/Workspace controls</li>
+      </ul>
+    </div>
+  `);
+
+  // wire events
+  wireStaffAdminEvents();
+  wireEmailAdminEvents();
+}
+
+async function renderStaffAdmin() {
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadStaff", authPayload({}), { timeoutMs: 20000, retries: 1 });
+    data = res.data;
+  });
+
+  const rows = (data.staff || []).map(s => `
+    <tr>
+      <td>${escapeHtml(s.staffId)}</td>
+      <td>${escapeHtml(s.name)}</td>
+      <td>${escapeHtml(s.role)}</td>
+      <td class="row gap">
+        <button class="btn btn-sm" data-staff-act="edit" data-staff-id="${escapeHtmlAttr(s.staffId)}">Edit</button>
+        <button class="btn btn-sm btn-danger" data-staff-act="del" data-staff-id="${escapeHtmlAttr(s.staffId)}">Delete</button>
+      </td>
+    </tr>
+  `).join("");
+
+  return `
+    <div class="card inner">
+      <h3>Staff (Admin)</h3>
+
+      <input type="hidden" id="stOriginalId" />
+      <div class="grid4">
+        <label><div class="label">StaffID</div><input id="stId" type="text" /></label>
+        <label><div class="label">ชื่อ</div><input id="stName" type="text" /></label>
+        <label><div class="label">Role</div>
+          <select id="stRole">
+            <option value="Admin">Admin</option>
+            <option value="RN">RN</option>
+            <option value="PN">PN</option>
+          </select>
+        </label>
+        <label><div class="label">Password (ใส่เพื่อเปลี่ยน)</div><input id="stPw" type="password" /></label>
+      </div>
+
+      <div class="row gap">
+        <button class="btn" id="stSave" type="button">Save (Add/Update)</button>
+        <button class="btn btn-secondary" id="stClear" type="button">Clear</button>
+      </div>
+
+      <div class="tablewrap">
+        <table class="table">
+          <thead><tr><th>StaffID</th><th>ชื่อ</th><th>Role</th><th>Action</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="4" class="muted">No staff</td></tr>`}</tbody>
+        </table>
+      </div>
+
+      <div class="hint">Password จะถูกเก็บเป็น SHA-256 hash ในชีต (ไม่ส่งกลับมาที่หน้าเว็บ)</div>
+    </div>
+  `;
+}
+
+function wireStaffAdminEvents() {
+  document.querySelectorAll("button[data-staff-act]").forEach(b => {
+    b.onclick = async () => {
+      const act = b.getAttribute("data-staff-act");
+      const sid = b.getAttribute("data-staff-id");
+      if (act === "edit") {
+        const res = await apiCall("loadStaff", authPayload({}), { timeoutMs: 20000, retries: 1 });
+        const rec = (res.data.staff || []).find(x => x.staffId === sid);
+        if (!rec) return;
+        el("stOriginalId").value = rec.staffId;
+        el("stId").value = rec.staffId;
+        el("stName").value = rec.name;
+        el("stRole").value = rec.role;
+        el("stPw").value = "";
+        showMsg("Edit Staff", "โหลดข้อมูลเข้าฟอร์มแล้ว (ใส่ Password เฉพาะเมื่อจะเปลี่ยน)");
+      }
+      if (act === "del") {
+        const ok = confirm(`Delete staff ${sid}?`);
+        if (!ok) return;
+        await withLoading(async () => {
+          await apiCall("deleteStaff", authPayload({ staffIdToDelete: sid }), { timeoutMs: 30000, retries: 0 });
+          await renderAdminTab();
+        });
+        showMsg("Deleted", "ลบ Staff เรียบร้อย");
+      }
+    };
+  });
+
+  el("stSave").onclick = async () => {
+    const originalStaffId = el("stOriginalId").value.trim();
+    const staffData = {
+      staffId: el("stId").value.trim(),
+      name: el("stName").value.trim(),
+      role: el("stRole").value,
+      password: el("stPw").value // optional for update; required for add
+    };
+
+    if (!staffData.staffId || !staffData.name || !staffData.role) return showMsg("Staff", "กรุณากรอกข้อมูลให้ครบ");
+
+    await withLoading(async () => {
+      if (originalStaffId && originalStaffId !== staffData.staffId) {
+        // update with ID change
+        await apiCall("updateStaff", authPayload({ staffData, originalStaffId }), { timeoutMs: 30000, retries: 0 });
+      } else if (originalStaffId) {
+        await apiCall("updateStaff", authPayload({ staffData, originalStaffId }), { timeoutMs: 30000, retries: 0 });
+      } else {
+        if (!staffData.password) return showMsg("Staff", "การเพิ่ม Staff ใหม่ ต้องกำหนด Password");
+        await apiCall("addStaff", authPayload({ staffData }), { timeoutMs: 30000, retries: 0 });
+      }
+      await renderAdminTab();
+    });
+
+    showMsg("Saved", "บันทึก Staff เรียบร้อย");
+  };
+
+  el("stClear").onclick = () => {
+    el("stOriginalId").value = "";
+    el("stId").value = "";
+    el("stName").value = "";
+    el("stRole").value = "Admin";
+    el("stPw").value = "";
+  };
+}
+
+async function renderEmailAdmin() {
+  let data = null;
+  await withLoading(async () => {
+    const res = await apiCall("loadEmailRecipients", authPayload({}), { timeoutMs: 20000, retries: 1 });
+    data = res.data;
+  });
+
+  const emails = (data.emails || []).join("\n");
+
+  return `
+    <div class="card inner">
+      <h3>Email Recipients (Admin)</h3>
+      <textarea id="emList" rows="10" placeholder="one email per line">${escapeHtml(emails)}</textarea>
+      <div class="row gap">
+        <button class="btn" id="emSave" type="button">Save Recipients</button>
+      </div>
+      <div class="hint">ใช้สำหรับ autoCheckAndEmail() และ generatePDFandEmail()</div>
+    </div>
+  `;
+}
+
+function wireEmailAdminEvents() {
+  el("emSave").onclick = async () => {
+    const lines = el("emList").value.split("\n").map(x => x.trim()).filter(Boolean);
+    await withLoading(async () => {
+      await apiCall("updateEmailRecipients", authPayload({ emails: lines }), { timeoutMs: 30000, retries: 0 });
+    });
+    showMsg("Saved", "อัปเดตรายชื่อผู้รับอีเมลเรียบร้อย");
+  };
+}
+
+/** =========================
+ * UI HELPERS
+ * ========================= */
+function button(text, onClick) {
+  const b = document.createElement("button");
+  b.className = "btn btn-secondary";
+  b.textContent = text;
+  b.onclick = onClick;
+  return b;
+}
+
+async function withLoading(fn) {
+  setLoading(true);
+  try {
+    return await fn();
+  } catch (err) {
+    const rid = err && err.requestId ? `<div class="muted">requestId: ${escapeHtml(err.requestId)}</div>` : "";
+    showMsg("Error", `<div class="error">${escapeHtml(err.message || String(err))}</div>${rid}`);
+    throw err;
+  } finally {
+    setLoading(false);
   }
-  const folder = DriveApp.createFolder("ICU Stock Item Images");
-  props.setProperty("ITEM_IMAGE_FOLDER_ID", folder.getId());
-  return folder;
 }
 
-/* ---------- Daily Check ---------- */
-function saveDailyCheckEx_(checkType, records, staffId, role) {
-  const type = String(checkType || "");
-  if (type === "Medicine" && !(role === ROLES.ADMIN || role === ROLES.RN)) return { success: false, error: "PN ไม่สามารถตรวจยา" };
-  if (type === "Supply" && !(role === ROLES.ADMIN || role === ROLES.PN)) return { success: false, error: "RN ไม่สามารถตรวจเวชภัณฑ์" };
-
-  const sh = ensureSheet_(type === "Medicine" ? SHEETS.DAILY_CHECK_MEDICINE : SHEETS.DAILY_CHECK_SUPPLY);
-  const staff = getStaffById_(staffId);
-  const staffName = staff ? staff.name : "";
-
-  const rows = (records || []).map(r => {
-    const counted = parseInt(r.countedQty,10) || 0;
-    return [
-      r.date || formatDateForDisplay_(new Date()),
-      String(r.name || "").trim(),
-      String(r.lotNo || "").trim(),
-      counted,
-      String(r.shift || "").trim(),
-      staffId,
-      staffName,
-      "OK",
-      new Date()
-    ];
-  }).filter(x => x[1] && x[2]);
-
-  if (!rows.length) return { success: false, error: "ไม่มีข้อมูลให้บันทึก" };
-  sh.getRange(sh.getLastRow()+1,1,rows.length,rows[0].length).setValues(rows);
-  logAudit_(staffId, "Daily Check", `${type} ${rows.length} rows`);
-  return { success: true, message: "บันทึก Daily Check สำเร็จ" };
+function escapeHtmlAttr(s) {
+  return String(s || "").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/&/g, "&amp;");
 }
 
-/* ---------- Staff ---------- */
-function getStaffById_(staffId) {
-  const sh = ensureSheet_(SHEETS.STAFF);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return null;
-  const headers = data[0];
-  const cId = headers.indexOf("StaffID");
-  const cName = headers.indexOf("ชื่อ");
-  const cRole = headers.indexOf("Role");
-  const row = data.slice(1).find(r => String(r[cId]||"").trim() === String(staffId||"").trim());
-  if (!row) return null;
-  return { id: String(row[cId]).trim(), name: String(row[cName]).trim(), role: String(row[cRole]).trim() };
+// For querySelector attribute matching; minimal
+function cssEsc(s) {
+  return String(s || "").replace(/["\\]/g, "\\$&");
 }
 
-function loadStaff_(staffId, role) {
-  requireAdmin_(role);
-  const sh = ensureSheet_(SHEETS.STAFF);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return { success: true, data: [] };
-  return {
-    success: true,
-    data: data.slice(1).map(r => ({ id: String(r[0]||"").trim(), name: String(r[1]||"").trim(), role: String(r[3]||"").trim() })).filter(x => x.id)
-  };
-}
+/** =========================
+ * INIT
+ * ========================= */
+function boot() {
+  el("msgOk").onclick = hideMsg;
 
-function addStaff_(userData, staffId, role) {
-  requireAdmin_(role);
-  const id = String(userData.staffId||"").trim();
-  const name = String(userData.name||"").trim();
-  const pass = String(userData.password||"").trim();
-  const r = String(userData.role||"").trim();
-  if (!id || !name || !pass || pass.length < 6) return { success: false, error: "ข้อมูลไม่ครบ/รหัสผ่านสั้น" };
-  if (![ROLES.ADMIN, ROLES.RN, ROLES.PN].includes(r)) return { success: false, error: "Role ไม่ถูกต้อง" };
-
-  const sh = ensureSheet_(SHEETS.STAFF);
-  const data = sh.getDataRange().getValues();
-  if (data.slice(1).some(x => String(x[0]).trim() === id)) return { success: false, error: "StaffID ซ้ำ" };
-  sh.appendRow([id,name,pass,r]);
-  logAudit_(staffId, "Add Staff", id);
-  return { success: true, message: "เพิ่มผู้ใช้สำเร็จ" };
-}
-
-function updateStaff_(userData, staffId, role) {
-  requireAdmin_(role);
-  const id = String(userData.staffId||"").trim();
-  const name = String(userData.name||"").trim();
-  const pass = String(userData.password||"").trim();
-  const r = String(userData.role||"").trim();
-  if (!id || !name || !pass || pass.length < 6) return { success: false, error: "ข้อมูลไม่ครบ/รหัสผ่านสั้น" };
-  if (![ROLES.ADMIN, ROLES.RN, ROLES.PN].includes(r)) return { success: false, error: "Role ไม่ถูกต้อง" };
-
-  const sh = ensureSheet_(SHEETS.STAFF);
-  const data = sh.getDataRange().getValues();
-  const rowIndex = data.slice(1).findIndex(x => String(x[0]).trim() === id) + 2;
-  if (rowIndex < 2) return { success: false, error: "ไม่พบ StaffID" };
-
-  sh.getRange(rowIndex,1,1,4).setValues([[id,name,pass,r]]);
-  logAudit_(staffId, "Update Staff", id);
-  return { success: true, message: "อัปเดตผู้ใช้สำเร็จ" };
-}
-
-function deleteStaff_(staffIdToDelete, staffId, role) {
-  requireAdmin_(role);
-  const sh = ensureSheet_(SHEETS.STAFF);
-  const data = sh.getDataRange().getValues();
-  const rowIndex = data.slice(1).findIndex(x => String(x[0]).trim() === String(staffIdToDelete).trim()) + 2;
-  if (rowIndex < 2) return { success: false, error: "ไม่พบ StaffID" };
-  sh.deleteRow(rowIndex);
-  logAudit_(staffId, "Delete Staff", staffIdToDelete);
-  return { success: true, message: "ลบผู้ใช้สำเร็จ" };
-}
-
-/* ---------- Usage Logs ---------- */
-function loadUsageLogs_() {
-  const sh = ensureSheet_(SHEETS.USAGE_LOGS);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return { success: true, data: [] };
-  return {
-    success: true,
-    data: data.slice(1).map(r => ({
-      date: String(r[0]||"").trim(),
-      name: String(r[1]||"").trim(),
-      lotNo: String(r[2]||"").trim(),
-      qty: parseInt(r[3],10) || 0,
-      by: String(r[4]||"").trim()
-    })).filter(x => x.name)
-  };
-}
-function recordUsage_(usageData, staffId) {
-  const sh = ensureSheet_(SHEETS.USAGE_LOGS);
-  const dateStr = formatDateForDisplay_(new Date());
-  sh.appendRow([dateStr, usageData.name, usageData.lotNo, parseInt(usageData.qty,10)||0, usageData.by, new Date()]);
-  logAudit_(staffId, "Usage", `${usageData.name} ${usageData.lotNo} ${usageData.qty}`);
-  return { success: true, message: "บันทึกการเบิกสำเร็จ" };
-}
-
-/* ---------- Shift Summary ---------- */
-function loadShiftSummary_() {
-  const sh = ensureSheet_(SHEETS.SHIFT_SUMMARY);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return { success: true, data: [] };
-  return {
-    success: true,
-    data: data.slice(1).map(r => ({
-      date: String(r[0]||"").trim(),
-      shift: String(r[1]||"").trim(),
-      staffId: String(r[2]||"").trim(),
-      staffName: String(r[3]||"").trim(),
-      detail: String(r[4]||"").trim()
-    })).filter(x => x.date)
-  };
-}
-function saveShiftSummary_(record, staffId) {
-  const sh = ensureSheet_(SHEETS.SHIFT_SUMMARY);
-  const staff = getStaffById_(staffId);
-  sh.appendRow([record.date, record.shift, staffId, staff ? staff.name : "", record.detail, new Date()]);
-  logAudit_(staffId, "Shift Summary", `${record.date} ${record.shift}`);
-  return { success: true, message: "บันทึกสรุปรอบสำเร็จ" };
-}
-
-/* ---------- Email recipients + settings ---------- */
-function loadEmailRecipients_() {
-  const sh = ensureSheet_(SHEETS.EMAIL_RECIPIENTS);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return { success: true, data: [] };
-  const emails = data.slice(1).map(r => String(r[0]||"").trim()).filter(x => x && x.includes("@"));
-  return { success: true, data: emails };
-}
-function updateEmailRecipients_(emails, staffId, role) {
-  requireAdmin_(role);
-  const sh = ensureSheet_(SHEETS.EMAIL_RECIPIENTS);
-  sh.clearContents();
-  sh.getRange(1,1).setValue("อีเมลผู้รับ").setFontWeight("bold").setBackground("#f0f2f5");
-  const rows = (emails||[]).map(x => String(x||"").trim()).filter(x => x && x.includes("@")).map(x => [x]);
-  if (rows.length) sh.getRange(2,1,rows.length,1).setValues(rows);
-  logAudit_(staffId, "Update Recipients", String(rows.length));
-  return { success: true, message: "อัปเดตอีเมลผู้รับสำเร็จ" };
-}
-
-function loadSettings_() {
-  const sh = ensureSheet_(SHEETS.SETTINGS);
-  const data = sh.getDataRange().getValues();
-  const map = {};
-  data.slice(1).forEach(r => map[String(r[0]||"").trim()] = String(r[1]||"").trim());
-  return {
-    thresholds: {
-      critical: parseInt(map.ExpiryThresholdCritical || EXPIRY_THRESHOLDS_DEFAULT.critical, 10),
-      warning: parseInt(map.ExpiryThresholdWarning || EXPIRY_THRESHOLDS_DEFAULT.warning, 10),
-      caution: parseInt(map.ExpiryThresholdCaution || EXPIRY_THRESHOLDS_DEFAULT.caution, 10)
+  el("btnTogglePw").onclick = () => {
+    const p = el("loginPassword");
+    if (p.type === "password") {
+      p.type = "text";
+      el("btnTogglePw").textContent = "Hide";
+    } else {
+      p.type = "password";
+      el("btnTogglePw").textContent = "Show";
     }
   };
-}
 
-function updateExpiryThresholds_(thresholds, staffId, role) {
-  requireAdmin_(role);
-  const sh = ensureSheet_(SHEETS.SETTINGS);
-  const data = sh.getDataRange().getValues();
-  const keys = ["ExpiryThresholdCritical","ExpiryThresholdWarning","ExpiryThresholdCaution"];
-  const values = [
-    String(parseInt(thresholds.critical,10) || 30),
-    String(parseInt(thresholds.warning,10) || 60),
-    String(parseInt(thresholds.caution,10) || 180)
-  ];
-
-  // build map rowIndex
-  const rowMap = {};
-  data.slice(1).forEach((r,i) => rowMap[String(r[0]||"").trim()] = i+2);
-
-  keys.forEach((k, idx) => {
-    const row = rowMap[k];
-    if (row) sh.getRange(row,2).setValue(values[idx]);
-    else sh.appendRow([k, values[idx]]);
-  });
-
-  logAudit_(staffId, "Update Thresholds", JSON.stringify(values));
-  return { success: true, message: "อัปเดต Threshold สำเร็จ" };
-}
-
-/* ---------- Reorder + Expired ---------- */
-function checkReorderItems_() {
-  const inv = loadInventory_(null).data || [];
-  const map = {};
-  inv.forEach(x => {
-    const name = x.name;
-    const qty = parseInt(x.quantity,10) || 0;
-    const min = parseInt(x.minimumStock,10) || 5;
-    if (!map[name]) map[name] = { total: 0, min };
-    map[name].total += qty;
-    map[name].min = Math.max(map[name].min, min);
-  });
-
-  const rows = Object.keys(map).map(name => {
-    const total = map[name].total;
-    const min = map[name].min;
-    const toOrder = Math.max(0, min - total);
-    return [name, total, min, toOrder];
-  }).filter(r => r[3] > 0);
-
-  rows.sort((a,b) => b[3] - a[3]);
-
-  const sh = ensureSheet_(SHEETS.REORDER_ITEMS);
-  sh.clearContents();
-  sh.getRange(1,1,1,4).setValues([["รายการ","จำนวนรวม","Minimum Stock","จำนวนที่ต้องสั่ง"]]).setFontWeight("bold").setBackground("#f0f2f5");
-  if (rows.length) sh.getRange(2,1,rows.length,4).setValues(rows);
-}
-
-function loadReorderItems_() {
-  const sh = ensureSheet_(SHEETS.REORDER_ITEMS);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return { success: true, data: [] };
-  return {
-    success: true,
-    data: data.slice(1).map(r => ({
-      name: String(r[0]||"").trim(),
-      totalQty: parseInt(r[1],10) || 0,
-      minimumStock: parseInt(r[2],10) || 0,
-      toOrder: parseInt(r[3],10) || 0
-    })).filter(x => x.name)
+  el("btnLogin").onclick = onLogin;
+  el("btnFirstTimeInit").onclick = onFirstTimeInit;
+  el("btnLogout").onclick = async () => {
+    clearSession();
+    setLoggedInUI(false);
+    el("loginPassword").value = "";
+    showMsg("Logout", "Logged out");
   };
+
+  loadSession();
+
+  if (state.staffId && state.role) {
+    setLoggedInUI(true);
+    buildTabs();
+    withLoading(async () => {
+      await primeData();
+      await renderActiveTab();
+    });
+  } else {
+    setLoggedInUI(false);
+  }
+
+  // Quick API_BASE_URL check
+  if (!API_BASE_URL || API_BASE_URL.includes("<PUT_WEB_APP_EXEC_URL_HERE>")) {
+    showMsg("Config required", `
+      <div class="warn">
+        กรุณาตั้งค่า <b>window.API_BASE_URL</b> ใน index.html ให้เป็น Apps Script Web App <b>/exec</b> URL
+      </div>
+    `);
+  }
 }
 
-function checkExpiredItems_() {
-  const inv = loadInventory_(null).data || [];
-  const t = loadSettings_().thresholds;
-
-  const rows = inv.map(x => {
-    const days = calculateExpiryDays_(x.expiryDate);
-    const status =
-      (days == null) ? "" :
-      (days <= 0) ? "หมดอายุแล้ว" :
-      (days <= t.critical) ? `ใกล้หมดอายุ (${t.critical} วัน)` :
-      (days <= t.warning) ? `ใกล้หมดอายุ (${t.warning} วัน)` :
-      (days <= t.caution) ? `ใกล้หมดอายุ (${t.caution} วัน)` : "";
-    return status ? [x.name, x.lotNo, x.quantity, x.expiryDate, status] : null;
-  }).filter(Boolean);
-
-  rows.sort((a,b) => (calculateExpiryDays_(a[3]) ?? 9999) - (calculateExpiryDays_(b[3]) ?? 9999));
-
-  const sh = ensureSheet_(SHEETS.EXPIRED_ITEMS);
-  sh.clearContents();
-  sh.getRange(1,1,1,5).setValues([["รายการ","Lot No","จำนวน","วันที่หมดอายุ","สถานะ"]]).setFontWeight("bold").setBackground("#f0f2f5");
-  if (rows.length) sh.getRange(2,1,rows.length,5).setValues(rows);
-}
-
-function loadExpiredItems_() {
-  const sh = ensureSheet_(SHEETS.EXPIRED_ITEMS);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return { success: true, data: [] };
-  return {
-    success: true,
-    data: data.slice(1).map(r => ({
-      name: String(r[0]||"").trim(),
-      lotNo: String(r[1]||"").trim(),
-      quantity: parseInt(r[2],10) || 0,
-      expiryDate: String(r[3]||"").trim(),
-      status: String(r[4]||"").trim()
-    })).filter(x => x.name)
-  };
-}
-
-function getCabinetList_(inv) {
-  const set = {};
-  (inv||[]).forEach(x => { const c = String(x.cabinet||"").trim(); if (c) set[c] = true; });
-  return Object.keys(set).sort();
-}
-
-/* ---------- Report / Email ---------- */
-function sendReportManually_(staffId, role) {
-  requireAdmin_(role);
-  // ที่นี่คงเป็น placeholder (สามารถต่อยอดเป็น PDF จริงได้)
-  // เพื่อให้ทดสอบ flow ได้ก่อน
-  logAudit_(staffId, "Send Report", "Manual trigger");
-  return { success: true, message: "Trigger ส่งรายงานแล้ว (โปรดต่อยอด PDF/Email ตามระบบเดิมหากต้องการ 1:1)" };
-}
-
-function sendExpirySummaryEmail_(staffId, role) {
-  requireAdmin_(role);
-  logAudit_(staffId, "Send Expiry Summary", "Manual trigger");
-  return { success: true, message: "Trigger ส่งอีเมลสรุปใกล้หมดอายุแล้ว" };
-}
-
-/* ---------- Backup ---------- */
-function getBackupInfo_() {
-  const props = PropertiesService.getScriptProperties();
-  const last = props.getProperty("LAST_BACKUP_AT");
-  const lastId = props.getProperty("LAST_BACKUP_FILE_ID");
-  return { message: last ? `Last backup: ${last} (fileId: ${lastId||"-"})` : "ยังไม่เคย backup" };
-}
-
-function backupData_(staffId, role) {
-  requireAdmin_(role);
-  const ssFile = DriveApp.getFileById(SPREADSHEET_ID);
-  const copy = ssFile.makeCopy(`ICU_Backup_${Utilities.formatDate(new Date(), "Asia/Bangkok", "yyyyMMdd_HHmm")}`);
-  PropertiesService.getScriptProperties().setProperty("LAST_BACKUP_AT", new Date().toISOString());
-  PropertiesService.getScriptProperties().setProperty("LAST_BACKUP_FILE_ID", copy.getId());
-  logAudit_(staffId, "Backup", copy.getId());
-  return { success: true, message: "Backup สำเร็จ", data: { fileId: copy.getId() } };
-}
-
-/* ---------- System Status ---------- */
-function getSystemStatus_() {
-  return { success: true, data: { spreadsheetId: SPREADSHEET_ID, brand: BRAND_NAME, time: new Date().toISOString() } };
-}
-
-/* ---------- Movement Logs ---------- */
-function appendMovement_(type, name, lotNo, qtyChange, qtyAfter, staffId) {
-  const sh = ensureSheet_(SHEETS.MOVEMENT_LOGS);
-  sh.appendRow([formatDateForDisplay_(new Date()), type, name, lotNo, qtyChange, qtyAfter, staffId, new Date()]);
-}
-
-/* ---------- Date utils ---------- */
-function formatDateForDisplay_(dateValue) {
-  if (!dateValue) return "";
-  const d = (dateValue instanceof Date) ? dateValue : new Date(dateValue);
-  if (isNaN(d.getTime())) return String(dateValue || "");
-  const dd = String(d.getDate()).padStart(2,"0");
-  const mm = String(d.getMonth()+1).padStart(2,"0");
-  const yyyy = d.getFullYear();
-  return `${dd}/${mm}/${yyyy}`;
-}
-
-function parseDateForStorage_(ddmmyyyy) {
-  const parts = String(ddmmyyyy || "").split("/");
-  if (parts.length !== 3) return "";
-  const d = new Date(parseInt(parts[2],10), parseInt(parts[1],10)-1, parseInt(parts[0],10));
-  if (isNaN(d.getTime())) return "";
-  return d;
-}
-
-function calculateExpiryDays_(expiryDateString) {
-  if (!expiryDateString) return null;
-  const parts = String(expiryDateString).split("/");
-  if (parts.length !== 3) return null;
-  const d = new Date(parseInt(parts[2],10), parseInt(parts[1],10)-1, parseInt(parts[0],10));
-  if (isNaN(d.getTime())) return null;
-  const today = new Date(); today.setHours(0,0,0,0);
-  d.setHours(0,0,0,0);
-  return Math.ceil((d - today) / (1000*60*60*24));
-}
+document.addEventListener("DOMContentLoaded", boot);
