@@ -1,7 +1,13 @@
 /* ICU Stock Management - GitHub Pages Frontend (Tailwind)
- * FIXED: auto-inject staffId/role into payload for all actions after login
- * - POST simple request: Content-Type: text/plain;charset=utf-8
- * - Toggle visibility via class "hidden"
+ * FIXED (Load-from-Sheet):
+ * - รองรับ shape ของ backend เดิม: loadInventory -> data.items
+ * - รองรับ getCabinetList -> data.cabinets
+ * - รองรับ loadUsageLogs -> data.rows
+ * FIXED (Daily/Usage payload):
+ * - saveDailyCheck -> { date, round, type, checks }
+ * - recordUsage -> { usageData:{ date, item, lotNo, qtyUsed, requester } }
+ * FIXED (Auth context):
+ * - เติม staffId/role อัตโนมัติทุก action (ยกเว้น verifyLogin)
  */
 
 (() => {
@@ -13,16 +19,16 @@
   const LOGO_URL = CFG.LOGO_URL || "https://lh5.googleusercontent.com/d/1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO";
 
   const state = {
-    user: null, // { staffId, name, role }
-    inventory: [],
-    usageLogs: [],
+    user: null, // { staffId, staffName, role }
+    inventory: [], // normalized: { rowNumber,item,lotNo,qty,minStock,expiryDate,note,cabinet,category }
+    usageRows: [], // normalized: { date,item,lotNo,qtyUsed,requester,timestamp }
     cabinets: [],
     isAdminSheetOpen: false,
   };
 
-  // ---------- DOM ----------
   const $ = (id) => document.getElementById(id);
 
+  // ---------- DOM (ต้องตรงกับ index.html ของชุด Tailwind) ----------
   const loginView = $("loginView");
   const appShell = $("appShell");
 
@@ -67,12 +73,12 @@
   // Views
   const views = ["home", "inventory", "daily", "usage", "profile", "admin"];
 
-  // Home widgets
+  // Home
   const systemStatus = $("systemStatus");
   const inventoryCount = $("inventoryCount");
   const roleHint = $("roleHint");
 
-  // Inventory widgets
+  // Inventory
   const invSearch = $("invSearch");
   const invCabinetFilter = $("invCabinetFilter");
   const invCategoryFilter = $("invCategoryFilter");
@@ -82,7 +88,7 @@
   const invTbody = $("invTbody");
   const invEmpty = $("invEmpty");
 
-  // Daily widgets
+  // Daily
   const dailyRoleHint = $("dailyRoleHint");
   const dailyDate = $("dailyDate");
   const dailyShift = $("dailyShift");
@@ -93,17 +99,17 @@
   const dailyList = $("dailyList");
   const dailyEmpty = $("dailyEmpty");
 
-  // Usage widgets
+  // Usage
   const refreshUsageBtn = $("refreshUsageBtn");
   const usageTbody = $("usageTbody");
   const usageEmpty = $("usageEmpty");
 
-  // Admin widgets
+  // Admin
   const adminOutput = $("adminOutput");
 
   // ---------- Utils ----------
   function safeText(v) {
-    return (v === null || v === undefined) ? "" : String(v);
+    return v === null || v === undefined ? "" : String(v);
   }
 
   function nowISO() {
@@ -112,19 +118,27 @@
 
   function uuid() {
     if (crypto?.randomUUID) return crypto.randomUUID();
-    // fallback
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-      const r = (crypto.getRandomValues(new Uint8Array(1))[0] & 15) >> 0;
-      const v = c === "x" ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
+    const b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (m) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+    }[m]));
   }
 
   function fmtDateDisplay(yyyyMmDd) {
     if (!yyyyMmDd) return "";
-    const [y, m, d] = yyyyMmDd.split("-");
-    if (!y || !m || !d) return yyyyMmDd;
-    return `${d}/${m}/${y}`;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(yyyyMmDd)) {
+      const [y, m, d] = yyyyMmDd.split("-");
+      return `${d}/${m}/${y}`;
+    }
+    return yyyyMmDd;
   }
 
   function setVisible(el, visible) {
@@ -133,16 +147,18 @@
   }
 
   function showLoading(msg = "Loading...") {
-    loadingText.textContent = msg;
+    if (!loadingOverlay) return;
+    if (loadingText) loadingText.textContent = msg;
     setVisible(loadingOverlay, true);
   }
 
   function hideLoading() {
+    if (!loadingOverlay) return;
     setVisible(loadingOverlay, false);
   }
 
   function setMessageBar(type, text) {
-    // type: success|error|info
+    if (!messageBar) return;
     const classes = {
       success: "border-emerald-700/50 bg-emerald-950/40 text-emerald-100",
       error: "border-rose-700/50 bg-rose-950/40 text-rose-100",
@@ -154,20 +170,23 @@
   }
 
   function clearMessageBar() {
+    if (!messageBar) return;
     setVisible(messageBar, false);
     messageBar.textContent = "";
   }
 
   function showModal(title, body) {
-    modalTitle.textContent = title || "Message";
-    modalBody.textContent = body || "";
+    if (!modalBackdrop) return;
+    if (modalTitle) modalTitle.textContent = title || "Message";
+    if (modalBody) modalBody.textContent = body || "";
     setVisible(modalBackdrop, true);
   }
 
   function hideModal() {
+    if (!modalBackdrop) return;
     setVisible(modalBackdrop, false);
-    modalTitle.textContent = "Message";
-    modalBody.textContent = "";
+    if (modalTitle) modalTitle.textContent = "Message";
+    if (modalBody) modalBody.textContent = "";
   }
 
   function roleIsAdmin() {
@@ -175,21 +194,20 @@
   }
 
   function roleDailyCategory() {
-    // RBAC note: backend must enforce; this is only UI hint
     if (state.user?.role === "RN") return "Medicine";
     if (state.user?.role === "PN") return "Medical Supply";
     return ""; // Admin = all
   }
 
-  // ---------- API Client (FIXED) ----------
+  // ---------- API Client ----------
   async function apiCall(action, payload = {}, opts = {}) {
     const timeoutMs = opts.timeoutMs ?? 15000;
     const retries = opts.retries ?? 1;
 
     const requestId = uuid();
 
-    // FIX: auto-inject auth context for all actions after login
-    const NO_AUTH_ACTIONS = new Set(["verifyLogin"]); // extend if needed
+    // เติม staffId/role อัตโนมัติ (ยกเว้น verifyLogin)
+    const NO_AUTH_ACTIONS = new Set(["verifyLogin", "initializeSheets", "debugSelfTest"]); // จะให้ 2 อันหลังมี auth ก็ได้ แต่ไม่บังคับ
     let finalPayload = payload;
 
     if (!NO_AUTH_ACTIONS.has(action) && state.user && finalPayload && typeof finalPayload === "object" && !Array.isArray(finalPayload)) {
@@ -197,12 +215,7 @@
       if (!("role" in finalPayload)) finalPayload = { ...finalPayload, role: state.user.role };
     }
 
-    const bodyObj = {
-      action,
-      payload: finalPayload,
-      requestId,
-      clientTime: nowISO(),
-    };
+    const bodyObj = { action, payload: finalPayload, requestId, clientTime: nowISO() };
 
     let lastErr = null;
 
@@ -222,19 +235,24 @@
         let json;
         try {
           json = JSON.parse(raw);
-        } catch (e) {
-          const msg = [
-            "Invalid JSON response",
-            `HTTP ${res.status}`,
-            `action=${action}`,
-            `requestId=${requestId}`,
-            `raw=${raw.slice(0, 300)}`
-          ].join("\n");
-          throw new Error(msg);
+        } catch {
+          throw new Error(
+            [
+              "Response is not valid JSON (often CORS/deploy issue).",
+              `HTTP ${res.status}`,
+              `action=${action}`,
+              `requestId=${requestId}`,
+              `raw=${raw.slice(0, 300)}`
+            ].join("\n")
+          );
         }
 
         json.action = json.action || action;
         json.requestId = json.requestId || requestId;
+
+        if (!json || typeof json.success !== "boolean") {
+          throw new Error(`Malformed API envelope: missing success. requestId=${json.requestId}`);
+        }
 
         if (!res.ok) {
           throw new Error(`HTTP ${res.status} (${res.statusText}) requestId=${json.requestId}`);
@@ -251,28 +269,12 @@
         lastErr = err;
 
         const isAbort = err?.name === "AbortError";
-        const isNetwork = err instanceof TypeError; // often CORS/network
+        const isNetwork = err instanceof TypeError || /failed to fetch/i.test(String(err?.message || ""));
         const retryable = isAbort || isNetwork;
 
         if (attempt < retries && retryable) {
-          await new Promise((r) => setTimeout(r, 400 + attempt * 600));
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
           continue;
-        }
-
-        if (isNetwork) {
-          throw new Error(
-            [
-              "Network/CORS error while calling Apps Script Web App.",
-              `action=${action}`,
-              `requestId=${requestId}`,
-              "",
-              "Checklist:",
-              "1) Apps Script Web App Deploy: Execute as 'Me', Who has access = 'Anyone' (or 'Anyone with link')",
-              "2) ใช้ URL แบบ .../exec (ไม่ใช่ /dev) และเป็นตัวล่าสุดหลัง Deploy",
-              "3) ตรวจว่า API_BASE_URL ใน config.js ถูกต้อง",
-              "4) ลองเปิด API_BASE_URL?action=ping ใน browser โดยตรง",
-            ].join("\n")
-          );
         }
 
         throw err;
@@ -281,16 +283,16 @@
       }
     }
 
-    throw lastErr || new Error("REQUEST_FAILED");
+    throw lastErr || new Error("Unknown API error");
   }
 
   async function apiPing() {
-    const url = new URL(API_BASE_URL);
-    url.searchParams.set("action", "ping");
     try {
+      const url = new URL(API_BASE_URL);
+      url.searchParams.set("action", "ping");
       const res = await fetch(url.toString(), { method: "GET" });
-      const raw = await res.text();
-      const json = JSON.parse(raw);
+      const txt = await res.text();
+      const json = JSON.parse(txt);
       return { ok: true, json };
     } catch (e) {
       return { ok: false, error: e };
@@ -324,18 +326,17 @@
     { key: "usage", label: "Usage Logs", icon: "fa-list-check" },
     { key: "profile", label: "Profile", icon: "fa-user" },
   ];
-
-  const NAV_ADMIN = [
-    { key: "admin", label: "Admin Console", icon: "fa-shield-halved" },
-  ];
+  const NAV_ADMIN = [{ key: "admin", label: "Admin Console", icon: "fa-shield-halved" }];
 
   function renderSidebarNav() {
+    if (!sidebarNav) return;
     const items = roleIsAdmin() ? [...NAV_COMMON, ...NAV_ADMIN] : [...NAV_COMMON];
     sidebarNav.innerHTML = "";
 
     for (const it of items) {
       const btn = document.createElement("button");
-      btn.className = "w-full text-left rounded-xl px-3 py-2 hover:bg-slate-900/60 border border-transparent hover:border-slate-800 flex items-center gap-3";
+      btn.className =
+        "w-full text-left rounded-xl px-3 py-2 hover:bg-slate-900/60 border border-transparent hover:border-slate-800 flex items-center gap-3";
       btn.dataset.nav = it.key;
       btn.innerHTML = `<i class="fa-solid ${it.icon} text-slate-200 w-5"></i><span class="text-sm text-slate-200">${it.label}</span>`;
       btn.addEventListener("click", () => setView(it.key));
@@ -344,13 +345,14 @@
   }
 
   function renderBottomNav() {
+    if (!adminCenterBtn) return;
     setVisible(adminCenterBtn, roleIsAdmin());
   }
 
   function setView(key) {
     if (!views.includes(key)) key = "home";
     views.forEach((k) => setVisible($(`view_${k}`), k === key));
-    activeViewBadge.textContent = key;
+    if (activeViewBadge) activeViewBadge.textContent = key;
 
     const titleMap = {
       home: "Dashboard",
@@ -360,45 +362,57 @@
       profile: "Profile",
       admin: "Admin Console",
     };
-    const t = document.querySelector("header .text-lg.font-semibold");
-    if (t) t.textContent = titleMap[key] || "Dashboard";
+    const headerTitle = document.querySelector("header .text-lg.font-semibold");
+    if (headerTitle) headerTitle.textContent = titleMap[key] || "Dashboard";
 
+    if (key === "home") void refreshHome();
     if (key === "inventory") void refreshInventory();
     if (key === "daily") void refreshDaily();
     if (key === "usage") void refreshUsage();
-    if (key === "home") void refreshHome();
     if (key === "profile") renderProfile();
   }
 
-  // ---------- Data / Rendering ----------
-  function setCabinetOptions(selectEl, cabinets) {
-    const current = selectEl.value || "";
-    selectEl.innerHTML = `<option value="">ทุกตู้</option>` + cabinets.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
-    selectEl.value = cabinets.includes(current) ? current : "";
+  // ---------- Data normalize (ให้ตรง backend เดิม) ----------
+  function normalizeInventoryRow(r) {
+    // backend เดิม: { rowNumber,item,lotNo,qty,minStock,expiryDate,note,cabinet,category }
+    return {
+      rowNumber: Number(r.rowNumber ?? r.id ?? 0) || undefined,
+      item: safeText(r.item ?? r["รายการ"] ?? r.itemName ?? ""),
+      lotNo: safeText(r.lotNo ?? r["Lot No"] ?? ""),
+      qty: Number(r.qty ?? r["จำนวน"] ?? r.quantity ?? 0) || 0,
+      minStock: Number(r.minStock ?? r["Minimum Stock"] ?? r.minimum ?? 0) || 0,
+      expiryDate: safeText(r.expiryDate ?? r["วันที่หมดอายุ"] ?? r.expiry ?? ""),
+      note: safeText(r.note ?? r["หมายเหตุ"] ?? ""),
+      cabinet: safeText(r.cabinet ?? r["ตู้"] ?? ""),
+      category: safeText(r.category ?? r["Category"] ?? ""),
+    };
   }
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (m) => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
-    }[m]));
+  function setCabinetOptions(selectEl, cabinets) {
+    if (!selectEl) return;
+    const current = selectEl.value || "";
+    selectEl.innerHTML =
+      `<option value="">ทุกตู้</option>` +
+      (cabinets || []).map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+    selectEl.value = (cabinets || []).includes(current) ? current : "";
   }
 
   function matchesInvFilters(row) {
-    const q = invSearch.value.trim().toLowerCase();
-    const cabinet = invCabinetFilter.value;
-    const cat = invCategoryFilter.value;
+    const q = (invSearch?.value || "").trim().toLowerCase();
+    const cabinet = invCabinetFilter?.value || "";
+    const cat = invCategoryFilter?.value || "";
 
     if (cabinet && safeText(row.cabinet) !== cabinet) return false;
     if (cat && safeText(row.category) !== cat) return false;
 
     if (!q) return true;
-    const hay = [
-      row.itemName, row.lotNo, row.note, row.cabinet, row.category
-    ].map(v => safeText(v).toLowerCase()).join(" | ");
+    const hay = [row.item, row.lotNo, row.note, row.cabinet, row.category].map((v) => safeText(v).toLowerCase()).join(" | ");
     return hay.includes(q);
   }
 
   function renderInventory() {
+    if (!invTbody || !invEmpty) return;
+
     const filtered = state.inventory.filter(matchesInvFilters);
     invTbody.innerHTML = "";
 
@@ -409,15 +423,14 @@
     setVisible(invEmpty, false);
 
     for (const r of filtered) {
-      const tr = document.createElement("tr");
-      tr.className = "hover:bg-slate-900/40";
-
-      const qty = Number(r.quantity ?? 0);
+      const qty = Number(r.qty ?? 0);
       const min = Number(r.minStock ?? 0);
       const low = min > 0 && qty < min;
 
+      const tr = document.createElement("tr");
+      tr.className = "hover:bg-slate-900/40";
       tr.innerHTML = `
-        <td class="px-4 py-3">${escapeHtml(r.itemName || "")}</td>
+        <td class="px-4 py-3">${escapeHtml(r.item || "")}</td>
         <td class="px-4 py-3">${escapeHtml(r.lotNo || "")}</td>
         <td class="px-4 py-3 text-right ${low ? "text-rose-300 font-semibold" : ""}">${escapeHtml(qty)}</td>
         <td class="px-4 py-3 text-right">${escapeHtml(min)}</td>
@@ -429,7 +442,7 @@
       invTbody.appendChild(tr);
     }
 
-    inventoryCount.textContent = `${state.inventory.length} items`;
+    if (inventoryCount) inventoryCount.textContent = `${state.inventory.length} items`;
   }
 
   function groupByCabinet(items) {
@@ -443,20 +456,17 @@
   }
 
   function renderDaily() {
-    const q = dailySearch.value.trim().toLowerCase();
-    const cabinet = dailyCabinetFilter.value;
+    if (!dailyList || !dailyEmpty) return;
+
+    const q = (dailySearch?.value || "").trim().toLowerCase();
+    const cabinet = dailyCabinetFilter?.value || "";
     const catLimit = roleDailyCategory();
 
     let items = [...state.inventory];
-
-    if (catLimit) items = items.filter(x => safeText(x.category) === catLimit);
-    if (cabinet) items = items.filter(x => safeText(x.cabinet) === cabinet);
-
+    if (catLimit) items = items.filter((x) => safeText(x.category) === catLimit);
+    if (cabinet) items = items.filter((x) => safeText(x.cabinet) === cabinet);
     if (q) {
-      items = items.filter(x => {
-        const hay = `${safeText(x.itemName)}|${safeText(x.lotNo)}`.toLowerCase();
-        return hay.includes(q);
-      });
+      items = items.filter((x) => (`${safeText(x.item)}|${safeText(x.lotNo)}`).toLowerCase().includes(q));
     }
 
     dailyList.innerHTML = "";
@@ -467,7 +477,6 @@
     setVisible(dailyEmpty, false);
 
     const groups = groupByCabinet(items);
-
     for (const [cab, arr] of groups) {
       const section = document.createElement("div");
       section.className = "rounded-2xl border border-slate-800 bg-slate-900/40 overflow-hidden";
@@ -484,24 +493,29 @@
         const row = document.createElement("div");
         row.className = "rounded-xl border border-slate-800 bg-slate-950/40 p-3";
 
+        const key = `${it.item}||${it.lotNo}`; // key สำหรับจับคู่ qty/status
         row.innerHTML = `
           <div class="flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
             <div class="min-w-0">
-              <div class="font-semibold truncate">${escapeHtml(it.itemName || "")}</div>
-              <div class="text-xs text-slate-300">Lot: ${escapeHtml(it.lotNo || "-")} • คงเหลือ: ${escapeHtml(it.quantity ?? 0)} • หมดอายุ: ${escapeHtml(fmtDateDisplay(it.expiryDate || ""))}</div>
+              <div class="font-semibold truncate">${escapeHtml(it.item || "")}</div>
+              <div class="text-xs text-slate-300">
+                Lot: ${escapeHtml(it.lotNo || "-")} • คงเหลือ: ${escapeHtml(it.qty ?? 0)}
+                • หมดอายุ: ${escapeHtml(fmtDateDisplay(it.expiryDate || ""))}
+              </div>
             </div>
 
             <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
               <input type="number" min="0" step="1"
-                class="dailyQty rounded-xl bg-slate-950/60 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
-                data-item="${escapeHtml(it.itemName || "")}" data-lot="${escapeHtml(it.lotNo || "")}"
-                placeholder="จำนวนที่ตรวจ"/>
+                class="dailyQty rounded-xl bg-slate-950/60 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-400"
+                data-key="${escapeHtml(key)}"
+                placeholder="จำนวนที่ตรวจ" value="${escapeHtml(it.qty ?? 0)}"/>
               <select
-                class="dailyStatus rounded-xl bg-slate-950/60 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
-                data-item="${escapeHtml(it.itemName || "")}" data-lot="${escapeHtml(it.lotNo || "")}">
+                class="dailyStatus rounded-xl bg-slate-950/60 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-400"
+                data-key="${escapeHtml(key)}">
                 <option value="OK">OK</option>
-                <option value="Low">Low</option>
-                <option value="Expired">Expired</option>
+                <option value="LOW">LOW</option>
+                <option value="MISSING">MISSING</option>
+                <option value="EXPIRED">EXPIRED</option>
               </select>
               <div class="hidden sm:block text-xs text-slate-400 self-center">Category: ${escapeHtml(it.category || "")}</div>
             </div>
@@ -516,21 +530,23 @@
   }
 
   function renderUsage() {
+    if (!usageTbody || !usageEmpty) return;
+
     usageTbody.innerHTML = "";
-    if (!state.usageLogs || state.usageLogs.length === 0) {
+    if (!state.usageRows || state.usageRows.length === 0) {
       setVisible(usageEmpty, true);
       return;
     }
     setVisible(usageEmpty, false);
 
-    for (const r of state.usageLogs) {
+    for (const r of state.usageRows) {
       const tr = document.createElement("tr");
       tr.className = "hover:bg-slate-900/40";
       tr.innerHTML = `
-        <td class="px-4 py-3">${escapeHtml(r.date || "")}</td>
-        <td class="px-4 py-3">${escapeHtml(r.itemName || "")}</td>
+        <td class="px-4 py-3">${escapeHtml(fmtDateDisplay(r.date || ""))}</td>
+        <td class="px-4 py-3">${escapeHtml(r.item || "")}</td>
         <td class="px-4 py-3">${escapeHtml(r.lotNo || "")}</td>
-        <td class="px-4 py-3 text-right">${escapeHtml(r.qty ?? "")}</td>
+        <td class="px-4 py-3 text-right">${escapeHtml(r.qtyUsed ?? "")}</td>
         <td class="px-4 py-3">${escapeHtml(r.requester || "")}</td>
         <td class="px-4 py-3">${escapeHtml(r.timestamp || "")}</td>
       `;
@@ -540,45 +556,29 @@
 
   function renderProfile() {
     const u = state.user;
-    $("profileBox").innerHTML = `
+    const box = $("profileBox");
+    if (!box) return;
+
+    box.innerHTML = `
       <div class="space-y-1">
-        <div><span class="text-slate-400">Name:</span> <span class="font-semibold">${escapeHtml(u?.name || "-")}</span></div>
+        <div><span class="text-slate-400">Name:</span> <span class="font-semibold">${escapeHtml(u?.staffName || "-")}</span></div>
         <div><span class="text-slate-400">StaffID:</span> <span class="font-mono">${escapeHtml(u?.staffId || "-")}</span></div>
         <div><span class="text-slate-400">Role:</span> <span class="font-semibold">${escapeHtml(u?.role || "-")}</span></div>
-        <div class="pt-2 text-xs text-slate-400">
-          (Hardening) แนะนำเพิ่ม token/session + server-side nonce ในอนาคต แต่ backend ต้องเป็นผู้ตรวจสิทธิ์ทุกครั้ง
-        </div>
       </div>
     `;
   }
 
-  // ---------- Loaders ----------
-  async function refreshHome() {
-    clearMessageBar();
-    try {
-      showLoading("Loading system status...");
-      const res = await apiCall("getSystemStatus", {}, { retries: 1 });
-      systemStatus.textContent = safeText(res.data?.status || "OK");
-    } catch (e) {
-      systemStatus.textContent = "ERROR";
-      setMessageBar("error", e.message);
-    } finally {
-      hideLoading();
-    }
-
-    inventoryCount.textContent = `${state.inventory.length} items`;
-    roleHint.textContent = state.user?.role ? `${state.user.role}` : "-";
-  }
-
+  // ---------- Loaders (สำคัญ: parse shape ให้ตรง backend เดิม) ----------
   async function refreshCabinets() {
     try {
       const res = await apiCall("getCabinetList", {}, { retries: 1 });
-      const list = Array.isArray(res.data) ? res.data : (res.data?.cabinets || []);
-      state.cabinets = (list || []).filter(Boolean);
+      const cabinets = res?.data?.cabinets ?? res?.data ?? [];
+      state.cabinets = Array.isArray(cabinets) ? cabinets.filter(Boolean) : [];
     } catch {
-      const set = new Set(state.inventory.map(x => safeText(x.cabinet)).filter(Boolean));
+      const set = new Set(state.inventory.map((x) => safeText(x.cabinet)).filter(Boolean));
       state.cabinets = [...set];
     }
+
     setCabinetOptions(invCabinetFilter, state.cabinets);
     setCabinetOptions(dailyCabinetFilter, state.cabinets);
   }
@@ -587,10 +587,15 @@
     clearMessageBar();
     try {
       showLoading("Loading inventory...");
-      const res = await apiCall("loadInventory", {}, { retries: 1 });
-      const rows = Array.isArray(res.data) ? res.data : [];
-      state.inventory = rows.map(normalizeInventoryRow);
-      inventoryCount.textContent = `${state.inventory.length} items`;
+      const res = await apiCall("loadInventory", {}, { retries: 1, timeoutMs: 20000 });
+
+      // backend เดิม: res.data.items
+      const items = res?.data?.items ?? res?.data ?? [];
+      const arr = Array.isArray(items) ? items : [];
+      state.inventory = arr.map(normalizeInventoryRow);
+
+      if (inventoryCount) inventoryCount.textContent = `${state.inventory.length} items`;
+
       await refreshCabinets();
       renderInventory();
     } catch (e) {
@@ -602,27 +607,34 @@
     }
   }
 
-  function normalizeInventoryRow(r) {
-    return {
-      itemName: r.itemName ?? r["รายการ"] ?? r.item ?? "",
-      lotNo: r.lotNo ?? r["Lot No"] ?? r.lot ?? "",
-      quantity: r.quantity ?? r["จำนวน"] ?? r.qty ?? 0,
-      minStock: r.minStock ?? r["Minimum Stock"] ?? r.minimum ?? 0,
-      expiryDate: r.expiryDate ?? r["วันที่หมดอายุ"] ?? r.expiry ?? "",
-      note: r.note ?? r["หมายเหตุ"] ?? "",
-      cabinet: r.cabinet ?? r["ตู้"] ?? "",
-      category: r.category ?? r["Category"] ?? "",
-    };
+  async function refreshHome() {
+    clearMessageBar();
+    try {
+      showLoading("Loading system status...");
+      const res = await apiCall("getSystemStatus", {}, { retries: 1, timeoutMs: 20000 });
+      systemStatus.textContent = safeText(res?.data?.status || res?.data?.ok || "OK");
+    } catch (e) {
+      if (systemStatus) systemStatus.textContent = "ERROR";
+      setMessageBar("error", e.message);
+    } finally {
+      hideLoading();
+    }
+
+    if (inventoryCount) inventoryCount.textContent = `${state.inventory.length} items`;
+    if (roleHint) roleHint.textContent = state.user?.role || "-";
   }
 
   async function refreshDaily() {
     clearMessageBar();
-    dailyRoleHint.textContent = roleDailyCategory()
-      ? `สิทธิ์ของคุณ: ตรวจเฉพาะ Category="${roleDailyCategory()}"`
-      : `สิทธิ์ของคุณ: ตรวจได้ทุก Category`;
 
-    if (!dailyDate.value) dailyDate.valueAsDate = new Date();
-    if (!dailyShift.value) dailyShift.value = "เช้า";
+    if (dailyRoleHint) {
+      dailyRoleHint.textContent = roleDailyCategory()
+        ? `สิทธิ์ของคุณ: ตรวจเฉพาะ Category="${roleDailyCategory()}"`
+        : `สิทธิ์ของคุณ: ตรวจได้ทุก Category`;
+    }
+
+    if (dailyDate && !dailyDate.value) dailyDate.valueAsDate = new Date();
+    if (dailyShift && !dailyShift.value) dailyShift.value = "Day";
 
     if (!state.inventory.length) await refreshInventory();
     await refreshCabinets();
@@ -633,47 +645,50 @@
     clearMessageBar();
     try {
       showLoading("Loading usage logs...");
-      const res = await apiCall("loadUsageLogs", {}, { retries: 1 });
-      const rows = Array.isArray(res.data) ? res.data : [];
-      state.usageLogs = rows.map(r => ({
-        date: r.date ?? r["วันที่"] ?? "",
-        itemName: r.itemName ?? r["รายการ"] ?? "",
-        lotNo: r.lotNo ?? r["Lot No"] ?? "",
-        qty: r.qty ?? r["จำนวนที่เบิก"] ?? "",
-        requester: r.requester ?? r["ผู้เบิก"] ?? "",
-        timestamp: r.timestamp ?? r["Timestamp"] ?? "",
+      const res = await apiCall("loadUsageLogs", {}, { retries: 1, timeoutMs: 20000 });
+
+      // backend เดิม: res.data.rows
+      const rows = res?.data?.rows ?? res?.data ?? [];
+      const arr = Array.isArray(rows) ? rows : [];
+
+      state.usageRows = arr.map((r) => ({
+        date: safeText(r.date ?? r["วันที่"] ?? ""),
+        item: safeText(r.item ?? r["รายการ"] ?? ""),
+        lotNo: safeText(r.lotNo ?? r["Lot No"] ?? ""),
+        qtyUsed: Number(r.qtyUsed ?? r["จำนวนที่เบิก"] ?? r.qty ?? 0) || 0,
+        requester: safeText(r.requester ?? r["ผู้เบิก"] ?? ""),
+        timestamp: safeText(r.timestamp ?? r["Timestamp"] ?? ""),
       }));
+
       renderUsage();
     } catch (e) {
       setMessageBar("error", e.message);
-      state.usageLogs = [];
+      state.usageRows = [];
       renderUsage();
     } finally {
       hideLoading();
     }
   }
 
-  // ---------- CSV ----------
+  // ---------- CSV (Inventory) ----------
   function toCsvValue(v) {
     const s = safeText(v).replaceAll('"', '""');
     return `"${s}"`;
   }
 
   function exportInventoryCsv() {
-    const header = ["รายการ","Lot No","จำนวน","Minimum Stock","วันที่หมดอายุ","หมายเหตุ","ตู้","Category"];
+    const header = ["รายการ", "Lot No", "จำนวน", "Minimum Stock", "วันที่หมดอายุ", "หมายเหตุ", "ตู้", "Category"];
     const lines = [header.map(toCsvValue).join(",")];
 
     for (const r of state.inventory) {
-      lines.push([
-        r.itemName, r.lotNo, r.quantity, r.minStock, r.expiryDate, r.note, r.cabinet, r.category
-      ].map(toCsvValue).join(","));
+      lines.push([r.item, r.lotNo, r.qty, r.minStock, r.expiryDate, r.note, r.cabinet, r.category].map(toCsvValue).join(","));
     }
 
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `inventory_${new Date().toISOString().slice(0,10)}.csv`;
+    a.download = `inventory_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -688,7 +703,7 @@
       const c = text[i];
       if (inQuotes) {
         if (c === '"') {
-          if (text[i+1] === '"') { field += '"'; i += 2; continue; }
+          if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
           inQuotes = false; i++; continue;
         }
         field += c; i++; continue;
@@ -702,14 +717,14 @@
     }
     row.push(field);
     rows.push(row);
-    return rows.filter(r => r.some(x => String(x).trim() !== ""));
+    return rows.filter((r) => r.some((x) => String(x).trim() !== ""));
   }
 
   function tryNormalizeExpiry(s) {
     if (!s) return "";
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
     if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
-      const [d,m,y] = s.split("/");
+      const [d, m, y] = s.split("/");
       return `${y}-${m}-${d}`;
     }
     return s;
@@ -720,10 +735,10 @@
     const rows = parseCsv(text);
     if (rows.length < 2) throw new Error("CSV ไม่มีข้อมูล");
 
-    const header = rows[0].map(h => h.trim());
+    const header = rows[0].map((h) => h.trim());
     const idx = (name) => header.indexOf(name);
 
-    const required = ["รายการ","Lot No","จำนวน","Minimum Stock","วันที่หมดอายุ","หมายเหตุ","ตู้","Category"];
+    const required = ["รายการ", "Lot No", "จำนวน", "Minimum Stock", "วันที่หมดอายุ", "หมายเหตุ", "ตู้", "Category"];
     for (const h of required) {
       if (idx(h) < 0) throw new Error(`CSV header ขาดคอลัมน์: ${h}`);
     }
@@ -732,20 +747,21 @@
     for (let r = 1; r < rows.length; r++) {
       const line = rows[r];
       const itemData = {
-        itemName: line[idx("รายการ")]?.trim() || "",
-        lotNo: line[idx("Lot No")]?.trim() || "",
-        quantity: Number(line[idx("จำนวน")] || 0),
+        rowNumber: undefined, // add ใหม่; ถ้าต้องการ update ให้ใส่ rowNumber เอง
+        item: (line[idx("รายการ")] || "").trim(),
+        lotNo: (line[idx("Lot No")] || "").trim(),
+        qty: Number(line[idx("จำนวน")] || 0),
         minStock: Number(line[idx("Minimum Stock")] || 0),
-        expiryDate: tryNormalizeExpiry(line[idx("วันที่หมดอายุ")]?.trim() || ""),
-        note: line[idx("หมายเหตุ")]?.trim() || "",
-        cabinet: line[idx("ตู้")]?.trim() || "",
-        category: line[idx("Category")]?.trim() || "",
+        expiryDate: tryNormalizeExpiry((line[idx("วันที่หมดอายุ")] || "").trim()),
+        note: (line[idx("หมายเหตุ")] || "").trim(),
+        cabinet: (line[idx("ตู้")] || "").trim(),
+        category: (line[idx("Category")] || "").trim(),
       };
 
-      if (!itemData.itemName || !itemData.lotNo) continue;
+      if (!itemData.item || !itemData.lotNo) continue;
 
       showLoading(`Importing... (${r}/${rows.length - 1})`);
-      await apiCall("saveInventoryItem", { itemData }, { retries: 1, timeoutMs: 20000 });
+      await apiCall("saveInventoryItem", { itemData }, { retries: 1, timeoutMs: 30000 });
       ok++;
     }
 
@@ -754,43 +770,39 @@
     await refreshInventory();
   }
 
-  // ---------- Daily Submit ----------
+  // ---------- Daily Submit (ให้ตรง backend เดิม) ----------
   async function submitDaily() {
     clearMessageBar();
     try {
-      const date = dailyDate.value || new Date().toISOString().slice(0,10);
-      const shift = dailyShift.value || "เช้า";
+      const date = dailyDate?.value || new Date().toISOString().slice(0, 10);
+      const round = dailyShift?.value || "Day";
+
+      // type: Admin เลือกได้เฉพาะ UI อื่น; ในชุดนี้ให้ยึดตาม role
+      const wantCategory = roleDailyCategory() || "Medical Supply"; // Admin default supply
+      const type = (wantCategory === "Medicine") ? "Medicine" : "Supply"; // backend เดิมใช้ Supply/Medicine
 
       const qtyEls = [...document.querySelectorAll(".dailyQty")];
       const statusEls = [...document.querySelectorAll(".dailyStatus")];
 
-      const statusMap = new Map(statusEls.map(el => [`${el.dataset.item}||${el.dataset.lot}`, el.value]));
+      const statusMap = new Map(statusEls.map((el) => [el.dataset.key, el.value]));
       const checks = [];
 
       for (const el of qtyEls) {
-        const item = el.dataset.item || "";
-        const lot = el.dataset.lot || "";
-        const qty = Number(el.value || 0);
-        const status = statusMap.get(`${item}||${lot}`) || "OK";
-        if (qty <= 0) continue;
+        const key = el.dataset.key;
+        const [item, lotNo] = String(key || "").split("||");
+        const checkedQty = Number(el.value || 0);
+        const status = statusMap.get(key) || "OK";
 
-        checks.push({
-          date, itemName: item, lotNo: lot,
-          checkedQty: qty,
-          shift,
-          staffId: state.user.staffId,
-          staffName: state.user.name,
-          status
-        });
+        checks.push({ item, lotNo, checkedQty, status });
       }
 
       if (checks.length === 0) {
-        showModal("Daily Check", "กรุณากรอกจำนวนที่ตรวจอย่างน้อย 1 รายการ");
+        showModal("Daily Check", "ไม่พบรายการให้บันทึก");
         return;
       }
 
       showLoading("Submitting daily check...");
-      const res = await apiCall("saveDailyCheck", { checkDataArray: checks }, { retries: 1, timeoutMs: 25000 });
+      const res = await apiCall("saveDailyCheck", { date, round, type, checks }, { retries: 1, timeoutMs: 30000 });
       hideLoading();
       showModal("Daily Check", `บันทึกสำเร็จ\nrequestId=${res.requestId || "-"}`);
     } catch (e) {
@@ -799,8 +811,9 @@
     }
   }
 
-  // ---------- Admin Actions ----------
+  // ---------- Admin ----------
   function setAdminOutput(obj) {
+    if (!adminOutput) return;
     adminOutput.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
   }
 
@@ -809,10 +822,9 @@
       showModal("Permission", "ต้องเป็น Admin เท่านั้น");
       return;
     }
-
     try {
       showLoading(`Running ${action}...`);
-      const res = await apiCall(action, {}, { retries: 1, timeoutMs: 30000 });
+      const res = await apiCall(action, {}, { retries: 0, timeoutMs: 60000 });
       setAdminOutput(res);
       showModal("Admin", `สำเร็จ: ${action}\nrequestId=${res.requestId || "-"}`);
     } catch (e) {
@@ -825,7 +837,7 @@
 
   // ---------- Admin Sheet ----------
   function openAdminSheet() {
-    if (!roleIsAdmin()) return;
+    if (!roleIsAdmin() || !adminSheetBackdrop || !adminSheetPanel) return;
     setVisible(adminSheetBackdrop, true);
     requestAnimationFrame(() => {
       adminSheetPanel.classList.remove("translate-y-full");
@@ -835,6 +847,7 @@
   }
 
   function closeAdminSheet() {
+    if (!adminSheetBackdrop || !adminSheetPanel) return;
     adminSheetPanel.classList.add("translate-y-full");
     adminSheetPanel.classList.remove("translate-y-0");
     setTimeout(() => setVisible(adminSheetBackdrop, false), 180);
@@ -850,7 +863,7 @@
       const d = res.data || {};
       const user = {
         staffId: d.staffId || staffId,
-        name: d.name || d.staffName || "",
+        staffName: d.staffName || d.name || "",
         role: d.role || "",
       };
 
@@ -869,25 +882,26 @@
     clearSession();
     state.user = null;
     state.inventory = [];
-    state.usageLogs = [];
+    state.usageRows = [];
     state.cabinets = [];
     setVisible(appShell, false);
     setVisible(loginView, true);
-    setVisible(adminCenterBtn, false);
+    if (adminCenterBtn) setVisible(adminCenterBtn, false);
     closeAdminSheet();
     setMessageBar("info", "Logged out");
     setTimeout(clearMessageBar, 1500);
   }
 
   async function enterApp() {
-    loginAppName.textContent = APP_NAME;
-    appName.textContent = APP_NAME;
+    if (loginAppName) loginAppName.textContent = APP_NAME;
+    if (appName) appName.textContent = APP_NAME;
 
-    loginLogo.src = LOGO_URL;
-    appLogo.src = LOGO_URL;
+    if (loginLogo) loginLogo.src = LOGO_URL;
+    if (appLogo) appLogo.src = LOGO_URL;
 
-    userBadge.textContent = `${state.user.name || "-"} (${state.user.staffId || "-"}) • ${state.user.role || "-"}`;
-    topUserInfo.textContent = userBadge.textContent;
+    const uText = `${state.user.staffName || "-"} (${state.user.staffId || "-"}) • ${state.user.role || "-"}`;
+    if (userBadge) userBadge.textContent = uText;
+    if (topUserInfo) topUserInfo.textContent = uText;
 
     renderSidebarNav();
     renderBottomNav();
@@ -895,31 +909,25 @@
     setVisible(loginView, false);
     setVisible(appShell, true);
 
-    if (!roleIsAdmin()) setVisible($("view_admin"), false);
-
-    await refreshInventory();
+    await refreshInventory(); // <-- สำคัญ: จะ set state.inventory จาก data.items
     await refreshHome();
     setView("home");
-
-    dailyRoleHint.textContent = roleDailyCategory()
-      ? `สิทธิ์ของคุณ: ตรวจเฉพาะ Category="${roleDailyCategory()}"`
-      : `สิทธิ์ของคุณ: ตรวจได้ทุก Category`;
   }
 
   // ---------- Events ----------
   function bindEvents() {
-    togglePasswordBtn.addEventListener("click", () => {
+    togglePasswordBtn?.addEventListener("click", () => {
       const isPw = loginPassword.type === "password";
       loginPassword.type = isPw ? "text" : "password";
-      togglePasswordText.textContent = isPw ? "Hide" : "Show";
+      if (togglePasswordText) togglePasswordText.textContent = isPw ? "Hide" : "Show";
     });
 
-    modalOkBtn.addEventListener("click", hideModal);
+    modalOkBtn?.addEventListener("click", hideModal);
 
-    loginForm.addEventListener("submit", async (e) => {
+    loginForm?.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const staffId = loginStaffId.value.trim();
-      const password = loginPassword.value;
+      const staffId = (loginStaffId?.value || "").trim();
+      const password = loginPassword?.value || "";
       if (!staffId || !password) {
         showModal("Login", "กรุณากรอก StaffID และ Password");
         return;
@@ -927,44 +935,49 @@
       await login(staffId, password);
     });
 
-    initSheetsBtn.addEventListener("click", async () => {
-      showModal("Initialize Sheets", "แนะนำให้ทำผ่าน Admin หลัง login");
+    initSheetsBtn?.addEventListener("click", async () => {
+      // สำหรับ first-time setup: เรียก initializeSheets ได้เลย (ไม่บังคับ auth ใน client)
+      try {
+        showLoading("Initializing sheets...");
+        const res = await apiCall("initializeSheets", {}, { retries: 0, timeoutMs: 60000 });
+        hideLoading();
+        showModal("Initialize Sheets", `สำเร็จ\nrequestId=${res.requestId || "-"}`);
+      } catch (e) {
+        hideLoading();
+        showModal("Initialize Sheets Error", e.message);
+      }
     });
 
-    logoutBtnDesktop.addEventListener("click", logout);
-    logoutBtnMobileTop.addEventListener("click", logout);
+    logoutBtnDesktop?.addEventListener("click", logout);
+    logoutBtnMobileTop?.addEventListener("click", logout);
 
-    bottomNav.querySelectorAll("[data-nav]").forEach(btn => {
+    bottomNav?.querySelectorAll("[data-nav]")?.forEach((btn) => {
       btn.addEventListener("click", () => setView(btn.dataset.nav));
     });
 
-    adminCenterBtn.addEventListener("click", () => {
+    adminCenterBtn?.addEventListener("click", () => {
       state.isAdminSheetOpen ? closeAdminSheet() : openAdminSheet();
     });
-    closeAdminSheetBtn.addEventListener("click", closeAdminSheet);
-    adminSheetDim.addEventListener("click", closeAdminSheet);
+    closeAdminSheetBtn?.addEventListener("click", closeAdminSheet);
+    adminSheetDim?.addEventListener("click", closeAdminSheet);
 
-    adminSheetBackdrop.querySelectorAll("[data-admin-action]").forEach(btn => {
+    adminSheetBackdrop?.querySelectorAll("[data-admin-action]")?.forEach((btn) => {
       btn.addEventListener("click", async () => {
         closeAdminSheet();
         await runAdminAction(btn.dataset.adminAction);
       });
     });
 
-    document.querySelectorAll(".adminBtn").forEach(btn => {
-      btn.classList.add(
-        "rounded-xl", "border", "border-slate-800", "bg-slate-950/60",
-        "hover:bg-slate-900", "px-4", "py-2", "text-slate-200"
-      );
+    document.querySelectorAll(".adminBtn").forEach((btn) => {
       btn.addEventListener("click", async () => runAdminAction(btn.dataset.adminAction));
     });
 
-    refreshInventoryBtn.addEventListener("click", refreshInventory);
-    invSearch.addEventListener("input", renderInventory);
-    invCabinetFilter.addEventListener("change", renderInventory);
-    invCategoryFilter.addEventListener("change", renderInventory);
+    refreshInventoryBtn?.addEventListener("click", refreshInventory);
+    invSearch?.addEventListener("input", renderInventory);
+    invCabinetFilter?.addEventListener("change", renderInventory);
+    invCategoryFilter?.addEventListener("change", renderInventory);
 
-    exportCsvBtn.addEventListener("click", () => {
+    exportCsvBtn?.addEventListener("click", () => {
       if (!state.inventory.length) {
         showModal("Export CSV", "ไม่มีข้อมูลใน Inventory");
         return;
@@ -972,7 +985,7 @@
       exportInventoryCsv();
     });
 
-    importCsvInput.addEventListener("change", async () => {
+    importCsvInput?.addEventListener("change", async () => {
       const file = importCsvInput.files?.[0];
       importCsvInput.value = "";
       if (!file) return;
@@ -990,16 +1003,16 @@
       }
     });
 
-    refreshDailyBtn.addEventListener("click", refreshDaily);
-    dailySearch.addEventListener("input", renderDaily);
-    dailyCabinetFilter.addEventListener("change", renderDaily);
-    submitDailyBtn.addEventListener("click", submitDaily);
+    refreshDailyBtn?.addEventListener("click", refreshDaily);
+    dailySearch?.addEventListener("input", renderDaily);
+    dailyCabinetFilter?.addEventListener("change", renderDaily);
+    submitDailyBtn?.addEventListener("click", submitDaily);
 
-    refreshUsageBtn.addEventListener("click", refreshUsage);
+    refreshUsageBtn?.addEventListener("click", refreshUsage);
 
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
-        if (!modalBackdrop.classList.contains("hidden")) hideModal();
+        if (modalBackdrop && !modalBackdrop.classList.contains("hidden")) hideModal();
         if (state.isAdminSheetOpen) closeAdminSheet();
       }
     });
@@ -1007,16 +1020,18 @@
 
   // ---------- Boot ----------
   async function boot() {
-    loginLogo.src = LOGO_URL;
-    appLogo.src = LOGO_URL;
-    loginAppName.textContent = APP_NAME;
-    appName.textContent = APP_NAME;
+    if (loginLogo) loginLogo.src = LOGO_URL;
+    if (appLogo) appLogo.src = LOGO_URL;
+    if (loginAppName) loginAppName.textContent = APP_NAME;
+    if (appName) appName.textContent = APP_NAME;
 
     const ping = await apiPing();
-    apiStatusBadge.textContent = ping.ok ? "API: OK" : "API: ERROR";
-    apiStatusBadge.className = ping.ok
-      ? "text-xs px-2 py-1 rounded-full border border-emerald-700/50 text-emerald-200"
-      : "text-xs px-2 py-1 rounded-full border border-rose-700/50 text-rose-200";
+    if (apiStatusBadge) {
+      apiStatusBadge.textContent = ping.ok ? "API: OK" : "API: ERROR";
+      apiStatusBadge.className = ping.ok
+        ? "text-xs px-2 py-1 rounded-full border border-emerald-700/50 text-emerald-200"
+        : "text-xs px-2 py-1 rounded-full border border-rose-700/50 text-rose-200";
+    }
 
     bindEvents();
 
@@ -1027,6 +1042,10 @@
     } else {
       setVisible(loginView, true);
       setVisible(appShell, false);
+
+      if (!API_BASE_URL || API_BASE_URL.includes("<PUT_WEB_APP_EXEC_URL_HERE>")) {
+        showModal("Config required", "กรุณาตั้งค่า API_BASE_URL ให้เป็น Apps Script Web App /exec URL");
+      }
     }
   }
 
