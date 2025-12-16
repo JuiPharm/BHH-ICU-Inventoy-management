@@ -1,87 +1,420 @@
 <!doctype html>
 <html lang="th">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ICU Stock Management</title>
-  <link rel="stylesheet" href="styles.css" />
+
+  <!-- Tailwind CDN -->
   <script>
-    // Edit only this line after you deploy Apps Script (exec URL):
-    window.API_BASE_URL = "https://script.google.com/macros/s/AKfycbxk8YusmqCrn0fcPITsHYS_9UIYu9mdT-3R-pKjDyOy8R3TuLekUW0akCm0iWd_X_kcuA/exec"; // https://script.google.com/macros/s/.../exec
+    tailwind = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  "#eef5ff",
+              100: "#d9e9ff",
+              200: "#b3d2ff",
+              300: "#80b6ff",
+              400: "#4d98ff",
+              500: "#1f78ff",
+              600: "#0b5fe6",
+              700: "#084bb4",
+              800: "#063a8a",
+              900: "#052d6b"
+            }
+          }
+        }
+      }
+    }
   </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+
+  <link rel="stylesheet" href="./styles.css" />
+  <script defer src="./config.js"></script>
+  <script defer src="./app.js"></script>
 </head>
-<body>
-  <div class="topbar">
-    <div class="brand">
-      <div class="brand-title">ICU Stock Management</div>
-      <div class="brand-sub">GitHub Pages UI • Google Apps Script API</div>
-    </div>
-    <div class="userbox" id="userBox" hidden>
-      <div class="userline"><span id="userName"></span> (<span id="userRole"></span>)</div>
-      <button class="btn btn-secondary" id="btnLogout">Logout</button>
-    </div>
-  </div>
 
-  <div class="container">
-    <!-- Login View -->
-    <section id="loginView" class="card">
-      <h2>Login</h2>
-      <div class="grid2">
-        <label>
-          <div class="label">StaffID</div>
-          <input id="loginStaffId" type="text" autocomplete="username" placeholder="เช่น admin" />
-        </label>
-        <label>
-          <div class="label">Password</div>
-          <div class="row">
-            <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Password" />
-            <button class="btn btn-secondary" id="btnTogglePw" type="button">Show</button>
+<body class="bg-slate-950 text-slate-100">
+  <!-- LOGIN VIEW -->
+  <div id="loginView" class="min-h-screen flex items-center justify-center px-4 py-10">
+    <div class="w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 md:p-8 shadow-xl">
+        <div class="flex items-center gap-3">
+          <img id="loginLogo" class="h-12 w-12 rounded-xl border border-slate-700 bg-slate-900 object-cover" alt="Logo" />
+          <div>
+            <h1 id="loginAppName" class="text-xl md:text-2xl font-semibold tracking-tight">ICU Stock Management</h1>
+            <p class="text-slate-300 text-sm">GitHub Pages UI + Google Apps Script API</p>
           </div>
-        </label>
-      </div>
-
-      <div class="row gap">
-        <button class="btn" id="btnLogin">Login</button>
-        <button class="btn btn-secondary" id="btnFirstTimeInit" type="button">First-time setup: Initialize Sheets</button>
-      </div>
-
-      <div class="hint">
-        หากเพิ่งเริ่มใช้งานครั้งแรก ให้กด “Initialize Sheets” เพื่อสร้างชีต/หัวตารางและสร้างบัญชีผู้ดูแลเริ่มต้น
-      </div>
-
-      <div id="loginInfo" class="info" hidden></div>
-    </section>
-
-    <!-- App View -->
-    <section id="appView" hidden>
-      <div class="tabs" id="tabs"></div>
-      <div class="panel card">
-        <div class="panel-head">
-          <h2 id="panelTitle">Inventory</h2>
-          <div class="panel-actions" id="panelActions"></div>
         </div>
-        <div id="panelBody"></div>
+
+        <div class="mt-6 space-y-3 text-slate-300 text-sm leading-relaxed">
+          <div class="flex gap-2">
+            <i class="fa-solid fa-check text-emerald-400 mt-0.5"></i>
+            <p>ตรวจสต็อกประจำวันตามรอบ (RN/PN ตามสิทธิ์)</p>
+          </div>
+          <div class="flex gap-2">
+            <i class="fa-solid fa-check text-emerald-400 mt-0.5"></i>
+            <p>ติดตามวันหมดอายุ / สต็อกต่ำ / รายการต้องสั่งเพิ่ม</p>
+          </div>
+          <div class="flex gap-2">
+            <i class="fa-solid fa-check text-emerald-400 mt-0.5"></i>
+            <p>รองรับ Admin: จัดการผู้ใช้ / ตั้งค่า / Backup / Audit Logs</p>
+          </div>
+        </div>
+
+        <div class="mt-6 rounded-xl border border-slate-800 bg-slate-950/40 p-4 text-xs text-slate-300">
+          <div class="flex items-center gap-2">
+            <i class="fa-solid fa-circle-info text-brand-300"></i>
+            <span>ถ้าเรียก API ไม่ได้ ให้ตรวจ API_BASE_URL ใน config.js และตรวจสิทธิ์ Deploy ของ Apps Script</span>
+          </div>
+        </div>
       </div>
-    </section>
-  </div>
 
-  <!-- Loading Overlay -->
-  <div class="overlay" id="loadingOverlay" hidden>
-    <div class="spinner"></div>
-    <div class="overlay-text">Loading...</div>
-  </div>
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 md:p-8 shadow-xl">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg md:text-xl font-semibold">Login</h2>
+          <span id="apiStatusBadge" class="text-xs px-2 py-1 rounded-full border border-slate-700 text-slate-300">API: unknown</span>
+        </div>
 
-  <!-- Message Box -->
-  <div class="modal" id="msgModal" hidden>
-    <div class="modal-card">
-      <div class="modal-title" id="msgTitle">Message</div>
-      <div class="modal-body" id="msgBody"></div>
-      <div class="modal-foot">
-        <button class="btn" id="msgOk">OK</button>
+        <form id="loginForm" class="mt-6 space-y-4">
+          <div>
+            <label class="block text-sm text-slate-300 mb-1">StaffID</label>
+            <input id="login_staffId" class="w-full rounded-xl bg-slate-950/60 border border-slate-700 px-4 py-3 outline-none focus:ring-2 focus:ring-brand-500"
+              placeholder="เช่น admin" autocomplete="username" required />
+          </div>
+
+          <div>
+            <label class="block text-sm text-slate-300 mb-1">Password</label>
+            <div class="flex gap-2">
+              <input id="login_password" type="password"
+                class="flex-1 rounded-xl bg-slate-950/60 border border-slate-700 px-4 py-3 outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="Password" autocomplete="current-password" required />
+              <button id="togglePasswordBtn" type="button"
+                class="shrink-0 rounded-xl border border-slate-700 bg-slate-950/60 px-4 py-3 hover:bg-slate-900">
+                <span id="togglePasswordText" class="text-sm">Show</span>
+              </button>
+            </div>
+          </div>
+
+          <button type="submit"
+            class="w-full rounded-xl bg-brand-600 hover:bg-brand-500 active:bg-brand-700 text-white font-semibold py-3">
+            เข้าสู่ระบบ
+          </button>
+
+          <button id="initSheetsBtn" type="button"
+            class="w-full rounded-xl border border-slate-700 bg-slate-950/60 hover:bg-slate-900 py-3 text-slate-200">
+            First-time setup: Initialize Sheets
+          </button>
+
+          <div id="loginHint" class="text-xs text-slate-400 leading-relaxed">
+            หมายเหตุ: ระบบนี้ใช้ fetch แบบ <span class="font-mono">Content-Type: text/plain</span> เพื่อลด preflight.
+          </div>
+        </form>
       </div>
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <!-- APP SHELL -->
+  <div id="appShell" class="hidden min-h-screen">
+    <!-- Sidebar (Desktop) -->
+    <aside class="hidden md:flex md:fixed md:inset-y-0 md:w-64 border-r border-slate-800 bg-slate-900/40 backdrop-blur">
+      <div class="w-full flex flex-col">
+        <div class="p-4 border-b border-slate-800 flex items-center gap-3">
+          <img id="appLogo" class="h-10 w-10 rounded-xl border border-slate-700 bg-slate-900 object-cover" alt="Logo" />
+          <div class="min-w-0">
+            <div id="appName" class="font-semibold truncate">ICU Stock Management</div>
+            <div id="userBadge" class="text-xs text-slate-300 truncate">-</div>
+          </div>
+        </div>
+
+        <nav id="sidebarNav" class="p-3 space-y-1 overflow-y-auto"></nav>
+
+        <div class="mt-auto p-3 border-t border-slate-800">
+          <button id="logoutBtnDesktop"
+            class="w-full rounded-xl border border-slate-700 bg-slate-950/60 hover:bg-slate-900 px-4 py-2 text-slate-200">
+            <i class="fa-solid fa-right-from-bracket mr-2"></i>Logout
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main (Desktop offset) -->
+    <main class="md:pl-64">
+      <!-- Top bar -->
+      <header class="sticky top-0 z-20 border-b border-slate-800 bg-slate-950/60 backdrop-blur">
+        <div class="px-4 py-3 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <button id="mobileHamburger" class="md:hidden rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 hover:bg-slate-900">
+              <i class="fa-solid fa-bars"></i>
+            </button>
+            <div class="flex items-center gap-3">
+              <div class="text-lg font-semibold tracking-tight">Dashboard</div>
+              <span id="activeViewBadge" class="text-xs px-2 py-1 rounded-full border border-slate-800 text-slate-300">home</span>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <span id="topUserInfo" class="hidden sm:inline text-sm text-slate-300"></span>
+            <button id="logoutBtnMobileTop"
+              class="md:hidden rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 hover:bg-slate-900">
+              <i class="fa-solid fa-right-from-bracket"></i>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Content -->
+      <div class="px-4 py-4 pb-24 md:pb-6 max-w-7xl mx-auto">
+        <div id="messageBar" class="hidden mb-4 rounded-xl border px-4 py-3 text-sm"></div>
+
+        <!-- Views -->
+        <section id="view_home" class="space-y-4">
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+              <div class="text-sm text-slate-300">System</div>
+              <div id="systemStatus" class="mt-2 text-lg font-semibold">-</div>
+              <div class="mt-1 text-xs text-slate-400">ใช้เมนู Admin เพื่อ debugSelfTest / setup trigger / backup</div>
+            </div>
+            <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+              <div class="text-sm text-slate-300">Inventory</div>
+              <div id="inventoryCount" class="mt-2 text-lg font-semibold">-</div>
+              <div class="mt-1 text-xs text-slate-400">รองรับ filter ตู้/Category และ Export CSV</div>
+            </div>
+            <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+              <div class="text-sm text-slate-300">Role</div>
+              <div id="roleHint" class="mt-2 text-lg font-semibold">-</div>
+              <div class="mt-1 text-xs text-slate-400">RN: Medicine / PN: Medical Supply / Admin: All</div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view_inventory" class="hidden space-y-4">
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+            <div class="flex flex-col md:flex-row md:items-end gap-3 justify-between">
+              <div>
+                <div class="text-lg font-semibold">Inventory</div>
+                <div class="text-xs text-slate-400">Filter ตามตู้/Category + Search</div>
+              </div>
+
+              <div class="flex flex-col sm:flex-row gap-2">
+                <button id="exportCsvBtn" class="rounded-xl bg-slate-950/60 border border-slate-800 px-4 py-2 hover:bg-slate-900">
+                  <i class="fa-solid fa-file-csv mr-2"></i>Export CSV
+                </button>
+                <label class="rounded-xl bg-slate-950/60 border border-slate-800 px-4 py-2 hover:bg-slate-900 cursor-pointer">
+                  <i class="fa-solid fa-upload mr-2"></i>Import CSV
+                  <input id="importCsvInput" type="file" accept=".csv,text/csv" class="hidden"/>
+                </label>
+              </div>
+            </div>
+
+            <div class="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+              <input id="invSearch" class="rounded-xl bg-slate-950/60 border border-slate-700 px-4 py-2 outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="ค้นหา: รายการ / Lot / หมายเหตุ" />
+              <select id="invCabinetFilter" class="rounded-xl bg-slate-950/60 border border-slate-700 px-4 py-2 outline-none focus:ring-2 focus:ring-brand-500">
+                <option value="">ทุกตู้</option>
+              </select>
+              <select id="invCategoryFilter" class="rounded-xl bg-slate-950/60 border border-slate-700 px-4 py-2 outline-none focus:ring-2 focus:ring-brand-500">
+                <option value="">ทุก Category</option>
+                <option value="Medical Supply">Medical Supply</option>
+                <option value="Medicine">Medicine</option>
+              </select>
+              <button id="refreshInventoryBtn" class="rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold px-4 py-2">
+                <i class="fa-solid fa-rotate mr-2"></i>Refresh
+              </button>
+            </div>
+          </div>
+
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/40 overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-950/60 text-slate-300">
+                  <tr>
+                    <th class="px-4 py-3 text-left">รายการ</th>
+                    <th class="px-4 py-3 text-left">Lot No</th>
+                    <th class="px-4 py-3 text-right">จำนวน</th>
+                    <th class="px-4 py-3 text-right">Minimum</th>
+                    <th class="px-4 py-3 text-left">หมดอายุ</th>
+                    <th class="px-4 py-3 text-left">หมายเหตุ</th>
+                    <th class="px-4 py-3 text-left">ตู้</th>
+                    <th class="px-4 py-3 text-left">Category</th>
+                  </tr>
+                </thead>
+                <tbody id="invTbody" class="divide-y divide-slate-800"></tbody>
+              </table>
+            </div>
+            <div id="invEmpty" class="hidden px-4 py-6 text-slate-400 text-sm">ไม่มีข้อมูล</div>
+          </div>
+        </section>
+
+        <section id="view_daily" class="hidden space-y-4">
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+            <div class="flex flex-col md:flex-row gap-3 md:items-end justify-between">
+              <div>
+                <div class="text-lg font-semibold">Daily Check</div>
+                <div id="dailyRoleHint" class="text-xs text-slate-400">-</div>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <input id="dailyDate" type="date" class="rounded-xl bg-slate-950/60 border border-slate-700 px-4 py-2 outline-none focus:ring-2 focus:ring-brand-500"/>
+                <select id="dailyShift" class="rounded-xl bg-slate-950/60 border border-slate-700 px-4 py-2 outline-none focus:ring-2 focus:ring-brand-500">
+                  <option value="เช้า">เช้า</option>
+                  <option value="บ่าย">บ่าย</option>
+                  <option value="ดึก">ดึก</option>
+                </select>
+                <button id="submitDailyBtn" class="rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold px-4 py-2">
+                  <i class="fa-solid fa-floppy-disk mr-2"></i>บันทึก Daily Check
+                </button>
+              </div>
+            </div>
+
+            <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+              <input id="dailySearch" class="rounded-xl bg-slate-950/60 border border-slate-700 px-4 py-2 outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="ค้นหา: รายการ / Lot" />
+              <select id="dailyCabinetFilter" class="rounded-xl bg-slate-950/60 border border-slate-700 px-4 py-2 outline-none focus:ring-2 focus:ring-brand-500">
+                <option value="">ทุกตู้</option>
+              </select>
+              <button id="refreshDailyBtn" class="rounded-xl bg-slate-950/60 border border-slate-800 px-4 py-2 hover:bg-slate-900">
+                <i class="fa-solid fa-rotate mr-2"></i>Refresh
+              </button>
+            </div>
+          </div>
+
+          <div id="dailyList" class="space-y-3"></div>
+          <div id="dailyEmpty" class="hidden text-slate-400 text-sm">ไม่มีรายการสำหรับ Daily Check</div>
+        </section>
+
+        <section id="view_usage" class="hidden space-y-4">
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+            <div class="text-lg font-semibold">Usage Logs</div>
+            <div class="text-xs text-slate-400">ดูประวัติการเบิก</div>
+            <button id="refreshUsageBtn" class="mt-3 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold px-4 py-2">
+              <i class="fa-solid fa-rotate mr-2"></i>Refresh
+            </button>
+          </div>
+
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/40 overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-950/60 text-slate-300">
+                  <tr>
+                    <th class="px-4 py-3 text-left">วันที่</th>
+                    <th class="px-4 py-3 text-left">รายการ</th>
+                    <th class="px-4 py-3 text-left">Lot No</th>
+                    <th class="px-4 py-3 text-right">จำนวนที่เบิก</th>
+                    <th class="px-4 py-3 text-left">ผู้เบิก</th>
+                    <th class="px-4 py-3 text-left">Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody id="usageTbody" class="divide-y divide-slate-800"></tbody>
+              </table>
+            </div>
+            <div id="usageEmpty" class="hidden px-4 py-6 text-slate-400 text-sm">ไม่มีข้อมูล</div>
+          </div>
+        </section>
+
+        <section id="view_profile" class="hidden space-y-4">
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+            <div class="text-lg font-semibold">Profile</div>
+            <div id="profileBox" class="mt-3 text-sm text-slate-300"></div>
+          </div>
+        </section>
+
+        <section id="view_admin" class="hidden space-y-4">
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+            <div class="text-lg font-semibold">Admin Console</div>
+            <div class="text-xs text-slate-400">ปุ่มเหล่านี้อยู่ใน Admin Action Sheet บนมือถือด้วย</div>
+
+            <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              <button data-admin-action="initializeSheets" class="adminBtn">Initialize Sheets</button>
+              <button data-admin-action="debugSelfTest" class="adminBtn">debugSelfTest</button>
+              <button data-admin-action="backupData" class="adminBtn">Backup Data</button>
+              <button data-admin-action="setupDailyTrigger" class="adminBtn">Setup Daily Trigger</button>
+              <button data-admin-action="loadEmailRecipients" class="adminBtn">Email Recipients</button>
+              <button data-admin-action="loadAuditLogs" class="adminBtn">Audit Logs Viewer</button>
+            </div>
+
+            <div id="adminOutput" class="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4 text-xs text-slate-200 font-mono whitespace-pre-wrap"></div>
+          </div>
+        </section>
+
+      </div>
+    </main>
+
+    <!-- Bottom Nav (Mobile) -->
+    <nav id="bottomNav" class="md:hidden fixed bottom-0 inset-x-0 z-30 border-t border-slate-800 bg-slate-950/80 backdrop-blur">
+      <div class="grid grid-cols-5 px-2 py-2">
+        <button data-nav="home" class="bnBtn">
+          <i class="fa-solid fa-house"></i><span>Home</span>
+        </button>
+        <button data-nav="inventory" class="bnBtn">
+          <i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span>
+        </button>
+
+        <!-- Admin center button (only show for Admin in JS) -->
+        <button id="adminCenterBtn" class="bnBtn hidden">
+          <div class="mx-auto h-11 w-11 rounded-2xl bg-brand-600 flex items-center justify-center shadow-lg">
+            <i class="fa-solid fa-bars text-white"></i>
+          </div>
+          <span class="-mt-1">Admin</span>
+        </button>
+
+        <button data-nav="daily" class="bnBtn">
+          <i class="fa-solid fa-clipboard-check"></i><span>Daily</span>
+        </button>
+        <button data-nav="profile" class="bnBtn">
+          <i class="fa-solid fa-user"></i><span>Profile</span>
+        </button>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Admin Action Sheet -->
+  <div id="adminSheetBackdrop" class="hidden fixed inset-0 z-40">
+    <div id="adminSheetDim" class="absolute inset-0 bg-black/60"></div>
+    <div id="adminSheetPanel" class="absolute inset-x-0 bottom-0 translate-y-full transition-transform duration-200">
+      <div class="mx-auto max-w-2xl rounded-t-3xl border border-slate-800 bg-slate-900/95 backdrop-blur p-4">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold">Admin Menu</div>
+          <button id="closeAdminSheetBtn" class="rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 hover:bg-slate-900">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <div class="mt-4 grid grid-cols-3 sm:grid-cols-4 gap-3">
+          <button data-admin-action="initializeSheets" class="sheetBtn"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Init</span></button>
+          <button data-admin-action="debugSelfTest" class="sheetBtn"><i class="fa-solid fa-stethoscope"></i><span>SelfTest</span></button>
+          <button data-admin-action="backupData" class="sheetBtn"><i class="fa-solid fa-database"></i><span>Backup</span></button>
+          <button data-admin-action="setupDailyTrigger" class="sheetBtn"><i class="fa-solid fa-clock"></i><span>Trigger</span></button>
+          <button data-admin-action="loadEmailRecipients" class="sheetBtn"><i class="fa-solid fa-envelope"></i><span>Email</span></button>
+          <button data-admin-action="loadAuditLogs" class="sheetBtn"><i class="fa-solid fa-shield-halved"></i><span>Audit</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Overlay (always safe: toggles hidden) -->
+  <div id="loadingOverlay" class="hidden fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm">
+    <div class="h-full w-full flex flex-col items-center justify-center gap-3">
+      <div class="spinner"></div>
+      <div id="loadingText" class="text-sm text-slate-200">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div id="modalBackdrop" class="hidden fixed inset-0 z-50">
+    <div class="absolute inset-0 bg-black/60"></div>
+    <div class="absolute inset-0 flex items-center justify-center px-4">
+      <div class="w-full max-w-xl rounded-2xl border border-slate-800 bg-slate-900/95 backdrop-blur p-5 shadow-2xl">
+        <div id="modalTitle" class="font-semibold">Message</div>
+        <div id="modalBody" class="mt-2 text-sm text-slate-200 whitespace-pre-wrap"></div>
+        <div class="mt-4 flex justify-end">
+          <button id="modalOkBtn" class="rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold px-4 py-2">OK</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
