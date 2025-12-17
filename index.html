@@ -5,224 +5,448 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ICU Stock Management</title>
 
-  <!-- Tailwind (CDN) -->
   <script src="https://cdn.tailwindcss.com"></script>
-
-  <!-- Your existing class-based UI styles (for elements rendered by app.js) -->
-  <link rel="stylesheet" href="styles.css" />
-
-  <script>
-    // Edit only this line after you deploy Apps Script (exec URL):
-    window.API_BASE_URL = "https://script.google.com/macros/s/AKfycbxk8YusmqCrn0fcPITsHYS_9UIYu9mdT-3R-pKjDyOy8R3TuLekUW0akCm0iWd_X_kcuA/exec"; // https://script.google.com/macros/s/.../exec
-  </script>
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 
 <body class="min-h-screen bg-slate-950 text-slate-100">
-  <!-- App Shell -->
-  <div class="min-h-screen">
-
-    <!-- Desktop Sidebar (Fixed) -->
-    <aside id="sidebar" hidden
-      class="hidden md:flex fixed left-0 top-0 h-screen w-64 flex-col border-r border-white/10 bg-slate-950/70 backdrop-blur">
-      <div class="p-4">
-        <div class="flex items-center gap-3">
-          <img
-            src="https://lh5.googleusercontent.com/d/1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO"
-            alt="Logo"
-            class="h-10 w-10 rounded-xl object-cover ring-1 ring-white/10"
-          />
-          <div>
-            <div class="text-sm font-semibold leading-tight">ICU Stock Management</div>
-            <div class="text-xs text-slate-400">GitHub Pages UI • Apps Script API</div>
-          </div>
-        </div>
-
-        <div class="mt-4 text-xs text-slate-400">
-          เมนู (Desktop): แสดงทั้งหมด • (Mobile): ใช้ Bottom Nav
-        </div>
-      </div>
-
-      <!-- IMPORTANT: app.js will render menu buttons into #tabs -->
-      <nav class="px-3 pb-4 overflow-y-auto">
-        <div id="tabs" class="flex flex-col gap-1"></div>
-      </nav>
-
-      <div class="mt-auto p-4 text-xs text-slate-500 border-t border-white/10">
-        <div>TIMEZONE: Asia/Bangkok</div>
-        <div>LOCALE: th-TH</div>
-      </div>
-    </aside>
-
-    <!-- Main Column -->
-    <div class="md:pl-64 min-h-screen">
-
-      <!-- Top Bar -->
-      <header class="sticky top-0 z-20 border-b border-white/10 bg-slate-950/70 backdrop-blur">
-        <div class="px-4 py-3 flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <img
-              src="https://lh5.googleusercontent.com/d/1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO"
-              alt="Logo"
-              class="h-9 w-9 rounded-xl object-cover ring-1 ring-white/10 md:hidden"
-            />
-            <div>
-              <div class="text-sm font-semibold">Dashboard</div>
-              <div class="text-xs text-slate-400">ICU Stock Management</div>
-            </div>
-          </div>
-
-          <!-- IMPORTANT: app.js controls #userBox / #userName / #userRole / #btnLogout -->
-          <div id="userBox" hidden class="flex items-center gap-3">
-            <div class="text-right">
-              <div class="text-sm">
-                <span id="userName" class="font-semibold"></span>
-                <span class="text-slate-400">•</span>
-                <span id="userRole" class="text-slate-300"></span>
-              </div>
-              <div class="text-xs text-slate-400">Session via sessionStorage</div>
-            </div>
-            <button class="btn btn-secondary" id="btnLogout" type="button">Logout</button>
-          </div>
-        </div>
-      </header>
-
-      <!-- Content -->
-      <main class="px-4 py-6 pb-28 md:pb-6">
-
-        <!-- Login View -->
-        <section id="loginView"
-          class="max-w-3xl mx-auto card">
-          <div class="flex items-center gap-3 mb-4">
-            <img
-              src="https://lh5.googleusercontent.com/d/1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO"
-              alt="Logo"
-              class="h-12 w-12 rounded-2xl object-cover ring-1 ring-white/10"
-            />
-            <div>
-              <h2 class="text-xl font-semibold">Login</h2>
-              <div class="text-sm text-slate-400">เข้าสู่ระบบเพื่อใช้งานเมนู Stock / Daily Check / Reports</div>
-            </div>
-          </div>
-
-          <div class="grid2">
-            <label>
-              <div class="label">StaffID</div>
-              <input id="loginStaffId" type="text" autocomplete="username" placeholder="เช่น admin" />
-            </label>
-
-            <label>
-              <div class="label">Password</div>
-              <div class="row">
-                <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Password" />
-                <button class="btn btn-secondary" id="btnTogglePw" type="button">Show</button>
-              </div>
-            </label>
-          </div>
-
-          <div class="row gap mt-3">
-            <button class="btn" id="btnLogin" type="button">Login</button>
-            <button class="btn btn-secondary" id="btnFirstTimeInit" type="button">
-              First-time setup: Initialize Sheets
-            </button>
-          </div>
-
-          <div class="hint mt-3">
-            หากเพิ่งเริ่มใช้งานครั้งแรก ให้กด “Initialize Sheets” เพื่อสร้างชีต/หัวตารางและสร้างบัญชีผู้ดูแลเริ่มต้น
-          </div>
-
-          <div id="loginInfo" class="info mt-3" hidden></div>
-        </section>
-
-        <!-- App View -->
-        <section id="appView" hidden>
-          <div class="panel card">
-            <div class="panel-head">
-              <h2 id="panelTitle" class="text-lg font-semibold">Inventory</h2>
-              <div class="panel-actions" id="panelActions"></div>
-            </div>
-            <div id="panelBody"></div>
-          </div>
-        </section>
-
-      </main>
-    </div>
-
-    <!-- Mobile Bottom Navigation -->
-    <nav id="bottomNav" hidden
-      class="md:hidden fixed bottom-0 left-0 right-0 z-30 border-t border-white/10 bg-slate-950/80 backdrop-blur">
-      <div class="px-2 py-2 flex items-stretch justify-between gap-2">
-        <button class="nav-btn" data-go-tab="inventory" id="navHome">Home</button>
-        <button class="nav-btn" data-go-tab="inventory" id="navInventory">Inventory</button>
-
-        <!-- Admin special middle button -->
-        <button class="nav-btn nav-btn-primary" data-toggle-sheet="1" id="navMenu" hidden>Menu</button>
-
-        <button class="nav-btn" data-go-tab="daily" id="navDaily">Daily</button>
-        <button class="nav-btn" data-go-tab="usage" id="navUsage">Usage</button>
-      </div>
-    </nav>
-
-    <!-- Expandable Bottom Sheet / Action Sheet -->
-    <div id="actionSheet" hidden class="md:hidden fixed inset-0 z-40">
-      <div id="sheetBackdrop" class="absolute inset-0 bg-black/60"></div>
-
-      <div class="absolute left-0 right-0 bottom-0 p-3">
-        <div class="rounded-2xl border border-white/10 bg-slate-900/95 backdrop-blur shadow-xl">
-          <div class="flex items-center justify-between px-4 py-3 border-b border-white/10">
-            <div class="font-semibold">Menu</div>
-            <button class="btn btn-secondary btn-sm" data-close-sheet="1" type="button">✕</button>
-          </div>
-
-          <div class="p-4">
-            <div class="text-xs text-slate-400 mb-3">
-              Action Sheet (Mobile): กดเมนูเพื่อสลับแท็บ • ระบบจะปิดแผงอัตโนมัติ
-            </div>
-
-            <div class="grid grid-cols-3 gap-2">
-              <button class="sheet-btn" data-go-tab="inventory" type="button">Inventory</button>
-              <button class="sheet-btn" data-go-tab="daily" type="button">Daily Check</button>
-              <button class="sheet-btn" data-go-tab="usage" type="button">Usage Logs</button>
-              <button class="sheet-btn" data-go-tab="reorder" type="button">Reorder</button>
-              <button class="sheet-btn" data-go-tab="expired" type="button">Expired</button>
-              <button class="sheet-btn" data-go-tab="shift" type="button">Shift Summary</button>
-
-              <!-- Admin-only entry (will be toggled by app.js) -->
-              <button class="sheet-btn" data-go-tab="admin" id="sheetAdminBtn" hidden type="button">Admin Console</button>
-            </div>
-
-            <div class="mt-3 text-xs text-slate-400">
-              Tip: เมนู Admin Console จะปรากฏเฉพาะ role=Admin
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Loading Overlay -->
-    <div id="loadingOverlay" hidden class="fixed inset-0 z-50 grid place-items-center bg-black/60">
-      <div class="rounded-2xl border border-white/10 bg-slate-900/90 backdrop-blur p-5 text-center">
-        <div class="mx-auto h-10 w-10 rounded-full border-2 border-white/20 border-t-white animate-spin"></div>
-        <div class="mt-3 text-sm text-slate-200">Loading...</div>
-      </div>
-    </div>
-
-    <!-- Message Box Modal -->
-    <div id="msgModal" hidden class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
-      <div class="w-full max-w-2xl rounded-2xl border border-white/10 bg-slate-900/95 backdrop-blur shadow-xl">
-        <div class="px-5 py-4 border-b border-white/10">
-          <div class="text-base font-semibold" id="msgTitle">Message</div>
-        </div>
-        <div class="px-5 py-4">
-          <div id="msgBody" class="text-sm text-slate-200"></div>
-        </div>
-        <div class="px-5 py-4 border-t border-white/10 flex justify-end">
-          <button class="btn" id="msgOk" type="button">OK</button>
-        </div>
-      </div>
-    </div>
-
+  <!-- Background glow -->
+  <div class="fixed inset-0 -z-10">
+    <div class="absolute inset-0 bg-gradient-to-b from-slate-950 via-slate-950 to-slate-950"></div>
+    <div class="absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-blue-600/10 blur-3xl"></div>
+    <div class="absolute -bottom-24 right-8 h-72 w-72 rounded-full bg-indigo-500/10 blur-3xl"></div>
   </div>
 
-  <script src="app.js"></script>
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay" class="hidden" hidden>
+    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center">
+      <div class="rounded-2xl border border-slate-400/15 bg-slate-950/70 px-4 py-3 flex items-center gap-3">
+        <svg class="h-5 w-5 animate-spin text-slate-200" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" opacity=".25"></circle>
+          <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+        </svg>
+        <div class="text-sm text-slate-200">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Message Modal -->
+  <div id="msgModal" class="hidden" hidden>
+    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+      <div class="w-full max-w-2xl rounded-2xl border border-slate-400/15 bg-slate-950/80 overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-400/15 flex items-center justify-between">
+          <div id="msgTitle" class="font-semibold">Message</div>
+          <button id="msgOk" class="btn btn-secondary">OK</button>
+        </div>
+        <div id="msgBody" class="px-5 py-4 text-sm text-slate-200"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Desktop Top Bar -->
+  <header class="hidden lg:flex fixed top-0 left-0 right-0 h-16 z-40 border-b border-slate-400/10 bg-slate-950/70 backdrop-blur">
+    <div class="flex items-center justify-between w-full pl-72 pr-6">
+      <div class="flex items-center gap-3">
+        <div class="text-lg font-semibold">Dashboard</div>
+        <div class="text-xs px-2 py-1 rounded-full border border-slate-400/15 bg-slate-900/40 text-slate-300">home</div>
+      </div>
+
+      <div id="userBox" class="hidden flex items-center gap-3" hidden>
+        <div class="text-right leading-tight">
+          <div class="text-sm font-semibold">
+            <span id="userName">-</span> <span class="text-slate-400">•</span> <span id="userRole" class="text-slate-300">-</span>
+          </div>
+          <div class="text-xs text-slate-400">Session via sessionStorage</div>
+        </div>
+        <button id="btnLogout" class="btn btn-secondary">Logout</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Sidebar / BottomNav container -->
+  <nav class="fixed z-50
+              lg:top-0 lg:left-0 lg:bottom-0 lg:w-64
+              bottom-0 left-0 right-0
+              border-t lg:border-t-0 lg:border-r border-slate-400/10
+              bg-slate-950/80 backdrop-blur">
+    <div class="hidden lg:flex h-16 items-center gap-3 px-4 border-b border-slate-400/10">
+      <img
+        src="https://lh5.googleusercontent.com/d/1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO"
+        alt="Logo"
+        class="h-10 w-10 rounded-xl bg-white/10 object-contain"
+        referrerpolicy="no-referrer"
+      />
+      <div class="min-w-0">
+        <div class="font-semibold truncate">ICU Stock Management</div>
+        <div class="text-xs text-slate-400 truncate">GitHub Pages UI • Apps Script API</div>
+      </div>
+    </div>
+
+    <!-- app.js will render .tab buttons here; we will transform to icon bottom nav on mobile -->
+    <div class="lg:p-3 p-2">
+      <div id="tabs" class="flex lg:flex-col gap-2 justify-between lg:justify-start"></div>
+    </div>
+  </nav>
+
+  <!-- Mobile top bar -->
+  <div class="lg:hidden fixed top-0 left-0 right-0 h-14 z-40 border-b border-slate-400/10 bg-slate-950/70 backdrop-blur">
+    <div class="h-14 px-3 flex items-center justify-between">
+      <div class="flex items-center gap-2 min-w-0">
+        <img
+          src="https://lh5.googleusercontent.com/d/1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO"
+          alt="Logo"
+          class="h-9 w-9 rounded-xl bg-white/10 object-contain"
+          referrerpolicy="no-referrer"
+        />
+        <div class="min-w-0">
+          <div class="text-sm font-semibold truncate">ICU Stock Management</div>
+          <div class="text-[11px] text-slate-400 truncate">Stock • Daily Check • Reports</div>
+        </div>
+      </div>
+      <button id="btnMobileProfile" class="btn btn-secondary btn-sm">Profile</button>
+    </div>
+  </div>
+
+  <!-- Admin Bottom Sheet (mobile) -->
+  <div id="adminSheet" class="hidden" hidden>
+    <div class="fixed inset-0 z-[55]">
+      <div id="adminSheetBackdrop" class="absolute inset-0 bg-black/60"></div>
+      <div class="absolute left-0 right-0 bottom-16 mx-auto max-w-xl px-3">
+        <div class="rounded-2xl border border-slate-400/15 bg-slate-950/85 overflow-hidden">
+          <div class="px-4 py-3 border-b border-slate-400/15 flex items-center justify-between">
+            <div class="font-semibold">Admin Console</div>
+            <button id="adminSheetClose" class="btn btn-secondary btn-sm">✕</button>
+          </div>
+          <div class="p-4">
+            <div class="grid grid-cols-3 gap-3">
+              <button class="btn btn-secondary" data-admin-action="adminTab">Reports</button>
+              <button class="btn btn-secondary" data-admin-action="systemStatus">Status</button>
+              <button class="btn btn-secondary" data-admin-action="selfTest">SelfTest</button>
+              <button class="btn btn-secondary" data-admin-action="backup">Backup</button>
+              <button class="btn btn-secondary" data-admin-action="trigger">Trigger</button>
+              <button class="btn btn-secondary" data-admin-action="autoEmail">AutoEmail</button>
+              <button class="btn btn-secondary" data-admin-action="pdf">PDF</button>
+              <button class="btn btn-secondary" data-admin-action="reorder">Reorder</button>
+              <button class="btn btn-secondary" data-admin-action="expired">Expired</button>
+            </div>
+            <div class="mt-3 text-xs text-slate-400">
+              แผงนี้เป็น Action Sheet (Expandable Bottom Sheet) เปิด/ปิดด้วยการ toggle class "hidden"
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <main class="pt-16 lg:pt-20 pb-24 lg:pb-8 lg:pl-64">
+    <div class="max-w-6xl mx-auto px-4 lg:px-6">
+
+      <!-- Login View -->
+      <section id="loginView" class="pt-10 lg:pt-16">
+        <div class="mx-auto max-w-2xl">
+          <div class="rounded-2xl border border-slate-400/15 bg-slate-950/70 overflow-hidden">
+            <div class="p-6 border-b border-slate-400/15 flex items-center gap-3">
+              <img
+                src="https://lh5.googleusercontent.com/d/1r7PM1ogHIbxskvcauVIYaQOfSHXWGncO"
+                alt="Logo"
+                class="h-10 w-10 rounded-xl bg-white/10 object-contain"
+                referrerpolicy="no-referrer"
+              />
+              <div>
+                <div class="text-xl font-semibold">Login</div>
+                <div class="text-sm text-slate-400">เข้าสู่ระบบเพื่อใช้งาน Stock / Daily Check / Reports</div>
+              </div>
+            </div>
+
+            <div class="p-6">
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <label class="block">
+                  <div class="label">StaffID</div>
+                  <input id="loginStaffId" type="text" placeholder="เช่น 520294" autocomplete="username" />
+                </label>
+
+                <label class="block">
+                  <div class="label">Password</div>
+                  <div class="flex gap-2">
+                    <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password" />
+                    <button id="btnTogglePw" type="button" class="btn btn-secondary whitespace-nowrap">Show</button>
+                  </div>
+                </label>
+              </div>
+
+              <div class="mt-5 flex flex-wrap items-center gap-3">
+                <button id="btnLogin" type="button" class="btn">Login</button>
+                <button id="btnFirstTimeInit" type="button" class="btn btn-secondary">Initialize Sheets</button>
+              </div>
+
+              <div class="mt-4 text-sm text-slate-400">
+                ครั้งแรกให้กด Initialize Sheets เพื่อสร้างตาราง/หัวตาราง และ bootstrap admin หากยังไม่มี
+              </div>
+
+              <div id="loginInfo" class="mt-4 hidden" hidden></div>
+
+              <div class="mt-6 text-xs text-slate-500">
+                TIMEZONE: Asia/Bangkok • LOCALE: th-TH
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- App View -->
+      <section id="appView" class="hidden" hidden>
+        <div class="mt-4 lg:mt-6">
+          <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+            <div class="min-w-0">
+              <div id="panelTitle" class="text-xl font-semibold">—</div>
+              <div class="text-sm text-slate-400">ICU Stock Management</div>
+            </div>
+            <div id="panelActions" class="flex flex-wrap gap-2 justify-start lg:justify-end"></div>
+          </div>
+
+          <div id="panelBody" class="mt-4"></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script src="./config.js"></script>
+  <script src="./app.js"></script>
+
+  <!-- Bottom Nav Icons + Role-Based Navigation + Admin Action Sheet controller -->
+  <script>
+    (function () {
+      const $ = (id) => document.getElementById(id);
+
+      function toggleHidden(id, forceOpen) {
+        const n = $(id);
+        if (!n) return;
+        const shouldOpen = (typeof forceOpen === "boolean") ? forceOpen : n.classList.contains("hidden");
+        if (shouldOpen) { n.classList.remove("hidden"); n.hidden = false; }
+        else { n.classList.add("hidden"); n.hidden = true; }
+      }
+
+      function isMobile() { return !window.matchMedia("(min-width: 1024px)").matches; }
+      function isAdmin() {
+        try { return (sessionStorage.getItem("icu_role") || "") === "Admin"; }
+        catch (e) { return false; }
+      }
+      function escapeHtml(s) {
+        return String(s || "").replace(/[&<>"']/g, c => ({
+          "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+        }[c]));
+      }
+
+      function findTabButtonByLabel(label) {
+        const tabs = document.querySelectorAll("#tabs .tab");
+        const target = label.trim().toLowerCase();
+        for (const b of tabs) {
+          const t = (b.textContent || "").trim().toLowerCase();
+          if (t === target) return b;
+        }
+        return null;
+      }
+      function clickTabByLabel(label) {
+        const b = findTabButtonByLabel(label);
+        if (b) { b.click(); return true; }
+        return false;
+      }
+
+      const ICONS = {
+        inventory: `<svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 7h16"></path><path d="M4 12h16"></path><path d="M4 17h16"></path><path d="M7 4v16"></path><path d="M17 4v16"></path></svg>`,
+        daily: `<svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 7V3"></path><path d="M16 7V3"></path><path d="M4 9h16"></path>
+          <path d="M6 21h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"></path>
+          <path d="m9.5 14.5 1.8 1.8 3.7-4"></path></svg>`,
+        usage: `<svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2v20"></path><path d="M19 7l-7 5-7-5"></path><path d="M19 17l-7-5-7 5"></path></svg>`,
+        profile: `<svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 21a8 8 0 0 0-16 0"></path><circle cx="12" cy="8" r="4"></circle></svg>`,
+        menu: `<svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path></svg>`
+      };
+
+      function setActiveBottomNav(key) {
+        const bar = document.getElementById("bottomNavBar");
+        if (!bar) return;
+        Array.from(bar.querySelectorAll("button[data-navkey]")).forEach(b => {
+          const k = b.getAttribute("data-navkey");
+          const active = k === key;
+          if (active) {
+            b.classList.add("ring-2","ring-blue-500/30","border-blue-400/25");
+            b.classList.remove("border-slate-400/10");
+          } else {
+            b.classList.remove("ring-2","ring-blue-500/30","border-blue-400/25");
+            if (k !== "admin_menu") b.classList.add("border-slate-400/10");
+          }
+        });
+      }
+
+      function ensureBottomNav() {
+        if (!isMobile()) return;
+        const tabsEl = $("tabs");
+        if (!tabsEl) return;
+        if (tabsEl.getAttribute("data-bottomnav") === "1") return;
+
+        // hide original tab buttons (still used for routing)
+        Array.from(tabsEl.querySelectorAll(".tab")).forEach(b => b.classList.add("hidden"));
+
+        const bar = document.createElement("div");
+        bar.id = "bottomNavBar";
+        bar.className = "flex items-end justify-around gap-2 px-2 py-2";
+
+        const itemsUser = [
+          { key: "inventory", label: "Inventory", icon: "inventory" },
+          { key: "daily", label: "Daily Check", icon: "daily" },
+          { key: "usage", label: "Usage", icon: "usage" },
+          { key: "profile", label: "Profile", icon: "profile" }
+        ];
+
+        const itemsAdmin = [
+          { key: "inventory", label: "Inventory", icon: "inventory" },
+          { key: "daily", label: "Daily Check", icon: "daily" },
+          { key: "admin_menu", label: "Admin", icon: "menu", special: true },
+          { key: "usage", label: "Usage", icon: "usage" },
+          { key: "profile", label: "Profile", icon: "profile" }
+        ];
+
+        const items = isAdmin() ? itemsAdmin : itemsUser;
+
+        items.forEach(it => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.setAttribute("data-navkey", it.key);
+
+          if (it.special) {
+            btn.className =
+              "group -mt-6 flex flex-col items-center justify-center min-w-[72px] " +
+              "rounded-3xl px-3 py-3 border border-blue-400/25 bg-blue-500/15 " +
+              "text-slate-100 shadow-[0_8px_30px_rgba(59,130,246,0.18)] " +
+              "hover:bg-blue-500/20 active:scale-[0.99] transition";
+            btn.innerHTML = `
+              <div class="h-12 w-12 rounded-2xl flex items-center justify-center border border-blue-400/25 bg-slate-950/40">
+                ${ICONS[it.icon]}
+              </div>
+              <div class="mt-1 text-[11px] font-semibold tracking-wide">ADMIN</div>
+            `;
+            btn.addEventListener("click", () => toggleHidden("adminSheet"));
+            bar.appendChild(btn);
+            return;
+          }
+
+          btn.className =
+            "group flex flex-col items-center justify-center min-w-[64px] " +
+            "rounded-2xl px-3 py-2 border border-slate-400/10 bg-slate-900/20 " +
+            "text-slate-200 hover:bg-slate-900/35 active:scale-[0.99] transition";
+
+          btn.innerHTML = `
+            <div class="h-10 w-10 rounded-2xl flex items-center justify-center border border-slate-400/10 bg-slate-950/35 group-hover:bg-slate-950/50 transition">
+              ${ICONS[it.icon]}
+            </div>
+            <div class="mt-1 text-[11px] text-slate-300">${escapeHtml(it.label)}</div>
+          `;
+
+          btn.addEventListener("click", () => {
+            if (it.key === "profile") {
+              const staffId = sessionStorage.getItem("icu_staffId") || "-";
+              const staffName = sessionStorage.getItem("icu_staffName") || "-";
+              const role = sessionStorage.getItem("icu_role") || "-";
+              window.showMsg && window.showMsg("Profile", `
+                <div class="text-sm">
+                  <div><b>StaffID:</b> ${escapeHtml(staffId)}</div>
+                  <div><b>Name:</b> ${escapeHtml(staffName)}</div>
+                  <div><b>Role:</b> ${escapeHtml(role)}</div>
+                </div>
+              `);
+              return;
+            }
+            clickTabByLabel(it.label);
+            setActiveBottomNav(it.key);
+          });
+
+          bar.appendChild(btn);
+        });
+
+        tabsEl.appendChild(bar);
+        tabsEl.setAttribute("data-bottomnav", "1");
+        setActiveBottomNav("inventory");
+      }
+
+      // Admin sheet close
+      $("adminSheetClose")?.addEventListener("click", () => toggleHidden("adminSheet", false));
+      $("adminSheetBackdrop")?.addEventListener("click", () => toggleHidden("adminSheet", false));
+
+      // Admin sheet actions (reuse app.js apiCall/authPayload/showMsg)
+      document.addEventListener("click", async (ev) => {
+        const btn = ev.target.closest("[data-admin-action]");
+        if (!btn) return;
+        const action = btn.getAttribute("data-admin-action");
+        const apiCall = window.apiCall;
+        const authPayload = window.authPayload;
+        try {
+          if (action === "adminTab") { clickTabByLabel("Report / Settings"); toggleHidden("adminSheet", false); return; }
+          if (action === "reorder") { clickTabByLabel("Reorder"); toggleHidden("adminSheet", false); return; }
+          if (action === "expired") { clickTabByLabel("Expired"); toggleHidden("adminSheet", false); return; }
+
+          const map = {
+            systemStatus: "getSystemStatus",
+            selfTest: "debugSelfTest",
+            backup: "backupData",
+            trigger: "setupDailyTrigger",
+            autoEmail: "autoCheckAndEmail",
+            pdf: "generatePDFandEmail"
+          };
+          const act = map[action];
+          if (!act) return;
+
+          toggleHidden("adminSheet", false);
+          clickTabByLabel("Report / Settings");
+
+          if (!apiCall || !authPayload) throw new Error("apiCall/authPayload not found on window (check app.js).");
+          const res = await apiCall(act, authPayload({}), { timeoutMs: act === "generatePDFandEmail" ? 60000 : 30000, retries: 0 });
+          window.showMsg && window.showMsg(act, `<pre class="pre">${window.escapeHtml ? window.escapeHtml(JSON.stringify(res.data, null, 2)) : JSON.stringify(res.data, null, 2)}</pre>`);
+        } catch (e) {
+          window.showMsg && window.showMsg("Error", `<div class="error">${escapeHtml(e && e.message ? e.message : String(e))}</div>`);
+        }
+      });
+
+      // Mobile Profile button
+      $("btnMobileProfile")?.addEventListener("click", () => {
+        const staffId = sessionStorage.getItem("icu_staffId") || "-";
+        const staffName = sessionStorage.getItem("icu_staffName") || "-";
+        const role = sessionStorage.getItem("icu_role") || "-";
+        window.showMsg && window.showMsg("Profile", `
+          <div class="text-sm">
+            <div><b>StaffID:</b> ${escapeHtml(staffId)}</div>
+            <div><b>Name:</b> ${escapeHtml(staffName)}</div>
+            <div><b>Role:</b> ${escapeHtml(role)}</div>
+          </div>
+        `);
+      });
+
+      // Observe #tabs rebuild by app.js
+      function observeTabs() {
+        const tabsEl = $("tabs");
+        if (!tabsEl) return;
+        const mo = new MutationObserver(() => setTimeout(ensureBottomNav, 0));
+        mo.observe(tabsEl, { childList: true, subtree: false });
+      }
+
+      window.addEventListener("load", () => { observeTabs(); ensureBottomNav(); });
+      window.addEventListener("resize", () => {
+        if (!isMobile()) {
+          document.getElementById("bottomNavBar")?.remove();
+          $("tabs")?.removeAttribute("data-bottomnav");
+          document.querySelectorAll("#tabs .tab").forEach(b => b.classList.remove("hidden"));
+          toggleHidden("adminSheet", false);
+        } else {
+          ensureBottomNav();
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
