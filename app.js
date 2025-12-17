@@ -7,7 +7,7 @@
 const APP_NAME = "ICU Stock Management";
 const TIMEZONE = "Asia/Bangkok";
 const LOCALE = "th-TH";
-const API_BASE_URL = (window.API_BASE_URL && String(window.API_BASE_URL)) || "<PUT_WEB_APP_EXEC_URL_HERE>";
+const API_BASE_URL = (window.API_BASE_URL && String(window.API_BASE_URL)) || "https://script.google.com/macros/s/AKfycbxk8YusmqCrn0fcPITsHYS_9UIYu9mdT-3R-pKjDyOy8R3TuLekUW0akCm0iWd_X_kcuA/exec";
 
 const sessionKeys = {
   staffId: "icu_staffId",
@@ -26,18 +26,31 @@ const state = {
 
 const el = (id) => document.getElementById(id);
 
+/** VISIBILITY compat: hidden attr + Tailwind .hidden */
+function setVisible(id, visible) {
+  const node = el(id);
+  if (!node) return;
+  node.hidden = !visible;
+  if (node.classList) {
+    if (visible) node.classList.remove("hidden");
+    else node.classList.add("hidden");
+  }
+}
+
 function setLoading(on) {
-  el("loadingOverlay").hidden = !on;
+  setVisible("loadingOverlay", !!on);
 }
 
 function showMsg(title, bodyHtml) {
-  el("msgTitle").textContent = title;
-  el("msgBody").innerHTML = bodyHtml;
-  el("msgModal").hidden = false;
+  const t = el("msgTitle");
+  const b = el("msgBody");
+  if (t) t.textContent = title;
+  if (b) b.innerHTML = bodyHtml;
+  setVisible("msgModal", true);
 }
 
 function hideMsg() {
-  el("msgModal").hidden = true;
+  setVisible("msgModal", false);
 }
 
 function uuidv4() {
@@ -50,25 +63,17 @@ function uuidv4() {
 }
 
 function formatDisplayDate(ymd) {
-  // ymd -> DD/MM/YYYY (Gregorian)
   if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd || "";
   const [y, m, d] = ymd.split("-").map(Number);
-  const dd = String(d).padStart(2, "0");
-  const mm = String(m).padStart(2, "0");
-  return `${dd}/${mm}/${y}`;
+  return `${String(d).padStart(2,"0")}/${String(m).padStart(2,"0")}/${y}`;
 }
 
 function todayYmd() {
   const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const da = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${da}`;
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
 
-/** =========================
- * API CLIENT (timeout + retry)
- * ========================= */
+/** API CLIENT (timeout + retry) */
 async function apiCall(action, payload = {}, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 15000;
   const retries = opts.retries ?? 1;
@@ -76,12 +81,7 @@ async function apiCall(action, payload = {}, opts = {}) {
   const requestId = uuidv4();
   const clientTime = new Date().toISOString();
 
-  const body = JSON.stringify({
-    action,
-    payload,
-    requestId,
-    clientTime
-  });
+  const body = JSON.stringify({ action, payload, requestId, clientTime });
 
   let lastErr = null;
 
@@ -99,19 +99,15 @@ async function apiCall(action, payload = {}, opts = {}) {
 
       const text = await res.text();
       let json;
-      try {
-        json = JSON.parse(text);
-      } catch (e) {
+      try { json = JSON.parse(text); }
+      catch (e) {
         throw new Error(
           `Response is not valid JSON. HTTP ${res.status}. ` +
-          `This is often a CORS / deployment issue.\n\n` +
           `Raw response (first 300 chars):\n${text.slice(0, 300)}`
         );
       }
 
-      if (!json || typeof json.success !== "boolean") {
-        throw new Error("Malformed API envelope. Missing success field.");
-      }
+      if (!json || typeof json.success !== "boolean") throw new Error("Malformed API envelope. Missing success field.");
 
       if (!json.success) {
         const rid = json.requestId ? ` (requestId: ${json.requestId})` : "";
@@ -126,18 +122,10 @@ async function apiCall(action, payload = {}, opts = {}) {
       return json;
     } catch (err) {
       lastErr = err;
-
-      // Retry only for network/timeout-like failures
       const isAbort = (err && err.name === "AbortError");
       const isNetwork = (err && String(err.message || "").toLowerCase().includes("failed to fetch"));
       const shouldRetry = attempt < retries && (isAbort || isNetwork);
-
-      if (shouldRetry) {
-        await sleep(500 * (attempt + 1));
-        continue;
-      }
-
-      // add requestId to thrown errors
+      if (shouldRetry) { await sleep(500 * (attempt + 1)); continue; }
       err.requestId = requestId;
       throw err;
     } finally {
@@ -148,9 +136,7 @@ async function apiCall(action, payload = {}, opts = {}) {
   throw lastErr || new Error("Unknown API error");
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({
@@ -158,9 +144,15 @@ function escapeHtml(s) {
   }[c]));
 }
 
-/** =========================
- * SESSION
- * ========================= */
+function escapeHtmlAttr(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function cssEsc(s) { return String(s || "").replace(/["\\]/g, "\\$&"); }
+
+/** SESSION */
 function loadSession() {
   state.staffId = sessionStorage.getItem(sessionKeys.staffId) || "";
   state.staffName = sessionStorage.getItem(sessionKeys.staffName) || "";
@@ -181,95 +173,16 @@ function clearSession() {
   loadSession();
 }
 
-/** =========================
- * RESPONSIVE NAV (BottomNav + ActionSheet)
- * - Toggle Visibility Class via hidden property + class toggles
- * ========================= */
-function isAdmin_() {
-  return state.role === "Admin";
-}
-
-function openSheet_() {
-  const s = el("actionSheet");
-  if (!s) return;
-  s.hidden = false;
-}
-
-function closeSheet_() {
-  const s = el("actionSheet");
-  if (!s) return;
-  s.hidden = true;
-}
-
-function toggleSheet_() {
-  const s = el("actionSheet");
-  if (!s) return;
-  s.hidden ? openSheet_() : closeSheet_();
-}
-
-function updateRoleBasedNav_() {
-  // bottom nav visibility per role
-  const navMenu = el("navMenu");
-  const sheetAdminBtn = el("sheetAdminBtn");
-
-  if (navMenu) navMenu.hidden = !isAdmin_();
-  if (sheetAdminBtn) sheetAdminBtn.hidden = !isAdmin_();
-}
-
-function setNavActive_() {
-  const ids = ["navHome", "navInventory", "navDaily", "navUsage", "navMenu"];
-  ids.forEach(id => {
-    const b = el(id);
-    if (!b) return;
-    b.classList.remove("is-active");
-  });
-
-  // Highlight logic:
-  // - inventory => highlight Inventory
-  // - daily => highlight Daily
-  // - usage => highlight Usage
-  // - reorder/expired/shift/admin => highlight Menu (if admin) else Inventory
-  const tab = state.activeTab;
-  if (tab === "inventory") el("navInventory")?.classList.add("is-active");
-  else if (tab === "daily") el("navDaily")?.classList.add("is-active");
-  else if (tab === "usage") el("navUsage")?.classList.add("is-active");
-  else if (["reorder","expired","shift","admin"].includes(tab)) {
-    if (isAdmin_()) el("navMenu")?.classList.add("is-active");
-    else el("navInventory")?.classList.add("is-active");
-  }
-}
-
-function navigateTo_(tabId) {
-  state.activeTab = tabId;
-  closeSheet_();
-  buildTabs();
-  setNavActive_();
-  return renderActiveTab();
-}
-
-/** =========================
- * UI BOOT
- * ========================= */
+/** UI BOOT */
 function setLoggedInUI(on) {
-  el("loginView").hidden = on;
-  el("appView").hidden = !on;
-  el("userBox").hidden = !on;
-
-  // NEW: Show/hide sidebar + bottom nav
-  const sb = el("sidebar");
-  const bn = el("bottomNav");
-  if (sb) sb.hidden = !on;
-  if (bn) bn.hidden = !on;
-
-  if (!on) closeSheet_();
+  setVisible("loginView", !on);
+  setVisible("appView", on);
+  setVisible("userBox", on);
 
   if (on) {
     el("userName").textContent = state.staffName || state.staffId;
     el("userRole").textContent = state.role || "";
   }
-
-  updateRoleBasedNav_();
-  setNavActive_();
 }
 
 function buildTabs() {
@@ -281,10 +194,7 @@ function buildTabs() {
     { id: "shift", label: "Shift Summary" },
     { id: "usage", label: "Usage" }
   ];
-
-  if (state.role === "Admin") {
-    tabs.push({ id: "admin", label: "Report / Settings" });
-  }
+  if (state.role === "Admin") tabs.push({ id: "admin", label: "Report / Settings" });
 
   const container = el("tabs");
   container.innerHTML = "";
@@ -292,45 +202,31 @@ function buildTabs() {
     const b = document.createElement("button");
     b.className = "tab" + (state.activeTab === t.id ? " active" : "");
     b.textContent = t.label;
-    b.onclick = () => navigateTo_(t.id);
+    b.onclick = () => { state.activeTab = t.id; buildTabs(); renderActiveTab(); };
     container.appendChild(b);
   });
-
-  setNavActive_();
 }
 
-function setPanelTitle(title) {
-  el("panelTitle").textContent = title;
-}
-
+function setPanelTitle(title) { el("panelTitle").textContent = title; }
 function setPanelActions(nodes) {
   const pa = el("panelActions");
   pa.innerHTML = "";
   (nodes || []).forEach(n => pa.appendChild(n));
 }
+function setPanelBody(html) { el("panelBody").innerHTML = html; }
 
-function setPanelBody(html) {
-  el("panelBody").innerHTML = html;
-}
-
-/** =========================
- * LOGIN FLOW
- * ========================= */
+/** LOGIN FLOW */
 async function onLogin() {
   const staffId = el("loginStaffId").value.trim();
   const password = el("loginPassword").value;
 
-  if (!staffId || !password) {
-    showMsg("Login", "กรุณากรอก StaffID และ Password");
-    return;
-  }
+  if (!staffId || !password) { showMsg("Login", "กรุณากรอก StaffID และ Password"); return; }
 
   setLoading(true);
   try {
     const res = await apiCall("verifyLogin", { staffId, password }, { timeoutMs: 15000, retries: 1 });
     const data = res.data;
     saveSession(data.staffId, data.staffName, data.role);
-
     setLoggedInUI(true);
     buildTabs();
     await primeData();
@@ -344,59 +240,40 @@ async function onLogin() {
 
 async function onFirstTimeInit() {
   setLoading(true);
-  el("loginInfo").hidden = true;
+  setVisible("loginInfo", false);
   try {
     const res = await apiCall("initializeSheets", {}, { timeoutMs: 30000, retries: 0 });
     const b = [];
     b.push(`<div class="ok">Initialize complete.</div>`);
     if (res.data && res.data.bootstrapAdmin && res.data.bootstrapAdmin.created) {
-      b.push(
-        `<div class="warn"><b>Default Admin Created</b><br/>` +
-        `StaffID: <b>${escapeHtml(res.data.bootstrapAdmin.staffId)}</b><br/>` +
-        `Password: <b>${escapeHtml(res.data.bootstrapAdmin.password)}</b><br/>` +
-        `${escapeHtml(res.data.bootstrapAdmin.note || "")}</div>`
-      );
+      b.push(`<div class="warn"><b>Default Admin Created</b><br/>StaffID: <b>${escapeHtml(res.data.bootstrapAdmin.staffId)}</b><br/>Password: <b>${escapeHtml(res.data.bootstrapAdmin.password)}</b><br/>${escapeHtml(res.data.bootstrapAdmin.note || "")}</div>`);
     } else {
       b.push(`<div class="info">Sheets created/ensured. If Staff already exists, please login with existing Admin.</div>`);
     }
     el("loginInfo").innerHTML = b.join("");
-    el("loginInfo").hidden = false;
+    setVisible("loginInfo", true);
   } catch (err) {
     el("loginInfo").innerHTML = `<div class="error">${escapeHtml(err.message || String(err))}</div>`;
-    el("loginInfo").hidden = false;
+    setVisible("loginInfo", true);
   } finally {
     setLoading(false);
   }
 }
 
-/** =========================
- * DATA PRIMING
- * ========================= */
-async function primeData() {
-  // Prime cabinet list + inventory cache
-  await refreshCabinets();
-  await refreshInventory();
-}
-
+/** DATA PRIMING */
+async function primeData() { await refreshCabinets(); await refreshInventory(); }
 async function refreshInventory() {
   const res = await apiCall("loadInventory", authPayload({}), { timeoutMs: 20000, retries: 1 });
   state.inventory = (res.data && res.data.items) ? res.data.items : [];
 }
-
 async function refreshCabinets() {
   const res = await apiCall("getCabinetList", authPayload({}), { timeoutMs: 15000, retries: 1 });
   state.cabinets = (res.data && res.data.cabinets) ? res.data.cabinets : [];
 }
+function authPayload(extra) { return Object.assign({}, extra || {}, { staffId: state.staffId, role: state.role }); }
 
-function authPayload(extra) {
-  return Object.assign({}, extra || {}, { staffId: state.staffId, role: state.role });
-}
-
-/** =========================
- * RENDER TABS
- * ========================= */
+/** RENDER TABS */
 async function renderActiveTab() {
-  setNavActive_();
   if (state.activeTab === "inventory") return renderInventoryTab();
   if (state.activeTab === "daily") return renderDailyTab();
   if (state.activeTab === "reorder") return renderReorderTab();
@@ -406,18 +283,31 @@ async function renderActiveTab() {
   if (state.activeTab === "admin") return renderAdminTab();
 }
 
+function button(text, onClick) {
+  const b = document.createElement("button");
+  b.className = "btn btn-secondary";
+  b.textContent = text;
+  b.onclick = onClick;
+  return b;
+}
+
+async function withLoading(fn) {
+  setLoading(true);
+  try { return await fn(); }
+  catch (err) {
+    const rid = err && err.requestId ? `<div class="muted">requestId: ${escapeHtml(err.requestId)}</div>` : "";
+    showMsg("Error", `<div class="error">${escapeHtml(err.message || String(err))}</div>${rid}`);
+    throw err;
+  } finally { setLoading(false); }
+}
+
 /** Inventory */
 async function renderInventoryTab() {
   setPanelTitle("Inventory");
 
   const btnRefresh = button("Refresh", async () => {
-    await withLoading(async () => {
-      await refreshCabinets();
-      await refreshInventory();
-      await renderInventoryTab();
-    });
+    await withLoading(async () => { await refreshCabinets(); await refreshInventory(); await renderInventoryTab(); });
   });
-
   setPanelActions([btnRefresh]);
 
   await withLoading(async () => { await refreshInventory(); });
@@ -432,7 +322,6 @@ async function renderInventoryTab() {
            <button class="btn btn-sm btn-danger" data-act="del" data-id="${it.rowNumber}">Delete</button>
          </div>`
       : `<span class="muted">View only</span>`;
-
     return `<tr>
       <td>${escapeHtml(it.item)}</td>
       <td>${escapeHtml(it.lotNo)}</td>
@@ -446,7 +335,7 @@ async function renderInventoryTab() {
     </tr>`;
   }).join("");
 
-  const form = canEdit ? renderInventoryForm() : `<div class="hint">RN/PN สามารถดูรายการได้ แต่แก้ไข Inventory ได้เฉพาะ Admin</div>`;
+  const form = canEdit ? renderInventoryForm() : `<div class="hint">RN/PN ดูได้ แต่แก้ไข Inventory ได้เฉพาะ Admin</div>`;
 
   setPanelBody(`
     ${form}
@@ -464,7 +353,6 @@ async function renderInventoryTab() {
   `);
 
   if (canEdit) {
-    // attach edit/delete handlers
     el("panelBody").querySelectorAll("button[data-act]").forEach(b => {
       b.onclick = async () => {
         const act = b.getAttribute("data-act");
@@ -473,7 +361,6 @@ async function renderInventoryTab() {
         if (act === "edit") return onEditInventory(id);
       };
     });
-
     el("invCancelEdit")?.addEventListener("click", () => clearInvForm());
     el("invSave")?.addEventListener("click", () => onSaveInventory());
   }
@@ -508,7 +395,7 @@ function renderInventoryForm() {
         <button class="btn" id="invSave" type="button">Save</button>
         <button class="btn btn-secondary" id="invCancelEdit" type="button">Clear</button>
       </div>
-      <div class="hint">หมายเหตุ: Category ใช้สำหรับ RBAC ของ Daily Check (RN=Medicine, PN=Medical Supply)</div>
+      <div class="hint">Category ใช้สำหรับ RBAC Daily Check (RN=Medicine, PN=Medical Supply)</div>
     </div>
   `;
 }
@@ -528,7 +415,6 @@ function clearInvForm() {
 async function onEditInventory(rowNumber) {
   const it = state.inventory.find(x => Number(x.rowNumber) === Number(rowNumber));
   if (!it) return;
-
   el("invRowNumber").value = String(it.rowNumber);
   el("invItem").value = it.item || "";
   el("invLot").value = it.lotNo || "";
@@ -581,14 +467,9 @@ async function onDeleteInventory(rowNumber) {
 /** Daily Check */
 async function renderDailyTab() {
   setPanelTitle("Daily Check");
-
   const btnRefresh = button("Refresh", async () => {
-    await withLoading(async () => {
-      await refreshInventory();
-      await renderDailyTab();
-    });
+    await withLoading(async () => { await refreshInventory(); await renderDailyTab(); });
   });
-
   setPanelActions([btnRefresh]);
 
   await withLoading(async () => { await refreshInventory(); });
@@ -602,36 +483,21 @@ async function renderDailyTab() {
       <div class="grid3">
         <label><div class="label">วันที่</div><input id="dcDate" type="date" value="${todayYmd()}" /></label>
         <label><div class="label">รอบ</div>
-          <select id="dcRound">
-            <option value="Day">Day</option>
-            <option value="Night">Night</option>
-            <option value="Other">Other</option>
-          </select>
+          <select id="dcRound"><option value="Day">Day</option><option value="Night">Night</option><option value="Other">Other</option></select>
         </label>
         <label><div class="label">ประเภท</div>
           ${role === "Admin" ? `
-            <select id="dcType">
-              <option value="Supply">Supply (Medical Supply)</option>
-              <option value="Medicine">Medicine</option>
-            </select>
-          ` : `
-            <input id="dcType" type="text" value="${escapeHtml(type)}" disabled />
-          `}
+            <select id="dcType"><option value="Supply">Supply (Medical Supply)</option><option value="Medicine">Medicine</option></select>
+          ` : `<input id="dcType" type="text" value="${escapeHtml(type)}" disabled />`}
         </label>
       </div>
-      <div class="hint">
-        RN ตรวจได้เฉพาะ Category=Medicine • PN ตรวจได้เฉพาะ Category=Medical Supply • Admin เลือกประเภทได้
-      </div>
-      <div class="row gap">
-        <button class="btn" id="dcSave" type="button">Save Daily Check</button>
-      </div>
+      <div class="hint">RN: Medicine เท่านั้น • PN: Medical Supply เท่านั้น • Admin เลือกประเภทได้</div>
+      <div class="row gap"><button class="btn" id="dcSave" type="button">Save Daily Check</button></div>
     </div>
-
     ${renderDailyCheckTable(type)}
   `;
 
   setPanelBody(body);
-
   if (role === "Admin") el("dcType").value = "Supply";
 
   el("dcSave").onclick = async () => {
@@ -652,7 +518,6 @@ async function renderDailyTab() {
     await withLoading(async () => {
       await apiCall("saveDailyCheck", authPayload({ date, round, type: (t === "Medicine" ? "Medicine" : "Supply"), checks }), { timeoutMs: 30000, retries: 1 });
     });
-
     showMsg("Saved", "บันทึก Daily Check เรียบร้อย");
   };
 }
@@ -673,15 +538,10 @@ function renderDailyCheckTable(type) {
       <td>${escapeHtml(it.cabinet || "")}</td>
       <td>${escapeHtml(exp)}</td>
       <td class="num">${escapeHtml(it.qty)}</td>
-      <td class="num">
-        <input class="in-sm" data-dc="qty" data-item="${escapeHtmlAttr(it.item)}" data-lot="${escapeHtmlAttr(it.lotNo)}" type="number" min="0" step="1" value="${escapeHtmlAttr(it.qty)}" />
-      </td>
+      <td class="num"><input class="in-sm" data-dc="qty" data-item="${escapeHtmlAttr(it.item)}" data-lot="${escapeHtmlAttr(it.lotNo)}" type="number" min="0" step="1" value="${escapeHtmlAttr(it.qty)}" /></td>
       <td>
         <select class="in-sm" data-dc="status" data-item="${escapeHtmlAttr(it.item)}" data-lot="${escapeHtmlAttr(it.lotNo)}">
-          <option value="OK">OK</option>
-          <option value="LOW">LOW</option>
-          <option value="MISSING">MISSING</option>
-          <option value="EXPIRED">EXPIRED</option>
+          <option value="OK">OK</option><option value="LOW">LOW</option><option value="MISSING">MISSING</option><option value="EXPIRED">EXPIRED</option>
         </select>
       </td>
     </tr>`;
@@ -690,144 +550,77 @@ function renderDailyCheckTable(type) {
   return `
     <div class="tablewrap">
       <table class="table">
-        <thead>
-          <tr>
-            <th>รายการ</th><th>Lot No</th><th>ตู้</th><th>หมดอายุ</th><th class="num">คงเหลือ</th><th class="num">จำนวนที่ตรวจ</th><th>สถานะ</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows || `<tr><td colspan="7" class="muted">No items for category: ${escapeHtml(wantCategory)}</td></tr>`}
-        </tbody>
+        <thead><tr><th>รายการ</th><th>Lot No</th><th>ตู้</th><th>หมดอายุ</th><th class="num">คงเหลือ</th><th class="num">จำนวนที่ตรวจ</th><th>สถานะ</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7" class="muted">No items for category: ${escapeHtml(wantCategory)}</td></tr>`}</tbody>
       </table>
-    </div>
-  `;
+    </div>`;
 }
 
 /** Reorder */
 async function renderReorderTab() {
   setPanelTitle("Reorder Items");
-
-  const btnRefresh = button("Refresh", async () => {
-    await withLoading(async () => { await renderReorderTab(); });
-  });
+  const btnRefresh = button("Refresh", async () => { await withLoading(async () => { await renderReorderTab(); }); });
   setPanelActions([btnRefresh]);
 
   let data = null;
-  await withLoading(async () => {
-    const res = await apiCall("loadReorderItems", authPayload({}), { timeoutMs: 30000, retries: 1 });
-    data = res.data;
-  });
+  await withLoading(async () => { data = (await apiCall("loadReorderItems", authPayload({}), { timeoutMs: 30000, retries: 1 })).data; });
 
   const rows = (data.items || []).map(it => `
-    <tr>
-      <td>${escapeHtml(it.item)}</td>
-      <td class="num">${escapeHtml(it.totalQty)}</td>
-      <td class="num">${escapeHtml(it.minStock)}</td>
-      <td class="num"><b>${escapeHtml(it.reorderQty)}</b></td>
-    </tr>
+    <tr><td>${escapeHtml(it.item)}</td><td class="num">${escapeHtml(it.totalQty)}</td><td class="num">${escapeHtml(it.minStock)}</td><td class="num"><b>${escapeHtml(it.reorderQty)}</b></td></tr>
   `).join("");
 
   setPanelBody(`
-    <div class="hint">ระบบคำนวณจาก Inventory (รวมจำนวนต่อ “รายการ”) และซิงก์ไปยังชีต “Reorder Items”</div>
-    <div class="tablewrap">
-      <table class="table">
-        <thead><tr><th>รายการ</th><th class="num">จำนวนรวม</th><th class="num">Minimum Stock</th><th class="num">จำนวนที่ต้องสั่ง</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="4" class="muted">No reorder needed</td></tr>`}</tbody>
-      </table>
-    </div>
-  `);
+    <div class="hint">คำนวณจาก Inventory (รวมจำนวนต่อ “รายการ”) และซิงก์ไปยังชีต “Reorder Items”</div>
+    <div class="tablewrap"><table class="table">
+      <thead><tr><th>รายการ</th><th class="num">จำนวนรวม</th><th class="num">Minimum Stock</th><th class="num">จำนวนที่ต้องสั่ง</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="4" class="muted">No reorder needed</td></tr>`}</tbody>
+    </table></div>`);
 }
 
 /** Expired */
 async function renderExpiredTab() {
   setPanelTitle("Expired Items");
-
-  const btnRefresh = button("Refresh", async () => {
-    await withLoading(async () => { await renderExpiredTab(); });
-  });
+  const btnRefresh = button("Refresh", async () => { await withLoading(async () => { await renderExpiredTab(); }); });
   setPanelActions([btnRefresh]);
 
   let data = null;
-  await withLoading(async () => {
-    const res = await apiCall("loadExpiredItems", authPayload({}), { timeoutMs: 30000, retries: 1 });
-    data = res.data;
-  });
+  await withLoading(async () => { data = (await apiCall("loadExpiredItems", authPayload({}), { timeoutMs: 30000, retries: 1 })).data; });
 
   const rows = (data.items || []).map(it => `
-    <tr>
-      <td>${escapeHtml(it.item)}</td>
-      <td>${escapeHtml(it.lotNo)}</td>
-      <td class="num">${escapeHtml(it.qty)}</td>
-      <td>${escapeHtml(formatDisplayDate(it.expiryDate))}</td>
-      <td>${escapeHtml(it.status)}</td>
-    </tr>
+    <tr><td>${escapeHtml(it.item)}</td><td>${escapeHtml(it.lotNo)}</td><td class="num">${escapeHtml(it.qty)}</td><td>${escapeHtml(formatDisplayDate(it.expiryDate))}</td><td>${escapeHtml(it.status)}</td></tr>
   `).join("");
 
-  const soon = (data.soonExpiring || []).slice(0, 20).map(x =>
-    `<li>${escapeHtml(x.item)} | Lot ${escapeHtml(x.lotNo)} | Exp ${escapeHtml(formatDisplayDate(x.expiryDate))} | Qty ${escapeHtml(x.qty)}</li>`
-  ).join("");
-
   setPanelBody(`
-    <div class="hint">ระบบคำนวณจาก Inventory และซิงก์ไปยังชีต “Expired Items”</div>
-
-    <div class="tablewrap">
-      <table class="table">
-        <thead><tr><th>รายการ</th><th>Lot No</th><th class="num">จำนวน</th><th>วันที่หมดอายุ</th><th>สถานะ</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="5" class="muted">No expired items</td></tr>`}</tbody>
-      </table>
-    </div>
-
-    <div class="card inner">
-      <h3>Expiring Soon (<= 30 days)</h3>
-      <ul>${soon || `<li class="muted">None</li>`}</ul>
-    </div>
-  `);
+    <div class="hint">คำนวณจาก Inventory และซิงก์ไปยังชีต “Expired Items”</div>
+    <div class="tablewrap"><table class="table">
+      <thead><tr><th>รายการ</th><th>Lot No</th><th class="num">จำนวน</th><th>วันที่หมดอายุ</th><th>สถานะ</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="5" class="muted">No expired items</td></tr>`}</tbody>
+    </table></div>`);
 }
 
 /** Shift Summary */
 async function renderShiftTab() {
   setPanelTitle("Shift Summary");
-
-  const btnRefresh = button("Refresh", async () => {
-    await withLoading(async () => { await renderShiftTab(); });
-  });
+  const btnRefresh = button("Refresh", async () => { await withLoading(async () => { await renderShiftTab(); }); });
   setPanelActions([btnRefresh]);
 
   let data = null;
-  await withLoading(async () => {
-    const res = await apiCall("loadShiftSummary", authPayload({}), { timeoutMs: 20000, retries: 1 });
-    data = res.data;
-  });
+  await withLoading(async () => { data = (await apiCall("loadShiftSummary", authPayload({}), { timeoutMs: 20000, retries: 1 })).data; });
 
   const rows = (data.rows || []).slice().reverse().slice(0, 200).map(r => `
-    <tr>
-      <td>${escapeHtml(formatDisplayDate(r.date))}</td>
-      <td>${escapeHtml(r.round)}</td>
-      <td>${escapeHtml(r.time)}</td>
-      <td>${escapeHtml(r.inspector)}</td>
-    </tr>
+    <tr><td>${escapeHtml(formatDisplayDate(r.date))}</td><td>${escapeHtml(r.round)}</td><td>${escapeHtml(r.time)}</td><td>${escapeHtml(r.inspector)}</td></tr>
   `).join("");
 
-  setPanelBody(`
-    <div class="tablewrap">
-      <table class="table">
-        <thead><tr><th>วันที่</th><th>รอบ</th><th>เวลา</th><th>ผู้ตรวจสอบ</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="4" class="muted">No data</td></tr>`}</tbody>
-      </table>
-    </div>
-  `);
+  setPanelBody(`<div class="tablewrap"><table class="table">
+    <thead><tr><th>วันที่</th><th>รอบ</th><th>เวลา</th><th>ผู้ตรวจสอบ</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="4" class="muted">No data</td></tr>`}</tbody>
+  </table></div>`);
 }
 
 /** Usage */
 async function renderUsageTab() {
   setPanelTitle("Usage");
-
-  const btnRefresh = button("Refresh", async () => {
-    await withLoading(async () => {
-      await refreshInventory();
-      await renderUsageTab();
-    });
-  });
+  const btnRefresh = button("Refresh", async () => { await withLoading(async () => { await refreshInventory(); await renderUsageTab(); }); });
   setPanelActions([btnRefresh]);
 
   await withLoading(async () => { await refreshInventory(); });
@@ -843,20 +636,14 @@ async function renderUsageTab() {
       <div class="grid3">
         <label><div class="label">วันที่</div><input id="useDate" type="date" value="${todayYmd()}" /></label>
         <label><div class="label">รายการ/ล็อต</div>
-          <select id="useSel">
-            <option value="">(เลือก)</option>
-            ${options}
-          </select>
+          <select id="useSel"><option value="">(เลือก)</option>${options}</select>
         </label>
         <label><div class="label">จำนวนที่เบิก</div><input id="useQty" type="number" min="1" step="1" value="1" /></label>
         <label><div class="label">ผู้เบิก</div><input id="useRequester" type="text" value="${escapeHtmlAttr(state.staffName || state.staffId)}" /></label>
       </div>
-      <div class="row gap">
-        <button class="btn" id="btnUseSave" type="button">Save Usage</button>
-      </div>
-      <div class="hint">ระบบจะตัดสต็อกจาก Inventory (ตาม item+lot) และเพิ่มบรรทัดใน “Usage Logs”</div>
+      <div class="row gap"><button class="btn" id="btnUseSave" type="button">Save Usage</button></div>
+      <div class="hint">ระบบตัดสต็อกจาก Inventory (item+lot) และเพิ่มบรรทัดใน “Usage Logs”</div>
     </div>
-
     <div id="usageLogs"></div>
   `);
 
@@ -865,7 +652,6 @@ async function renderUsageTab() {
     const sel = el("useSel").value;
     const qtyUsed = Number(el("useQty").value);
     const requester = el("useRequester").value.trim();
-
     if (!sel) return showMsg("Usage", "กรุณาเลือกรายการ/ล็อต");
     const [item, lotNo] = sel.split("||");
 
@@ -874,7 +660,6 @@ async function renderUsageTab() {
       await refreshInventory();
       await renderUsageLogs();
     });
-
     showMsg("Saved", "บันทึกการเบิกเรียบร้อย");
   };
 
@@ -883,30 +668,17 @@ async function renderUsageTab() {
 
 async function renderUsageLogs() {
   let data = null;
-  await withLoading(async () => {
-    const res = await apiCall("loadUsageLogs", authPayload({}), { timeoutMs: 20000, retries: 1 });
-    data = res.data;
-  });
+  await withLoading(async () => { data = (await apiCall("loadUsageLogs", authPayload({}), { timeoutMs: 20000, retries: 1 })).data; });
 
   const rows = (data.rows || []).slice().reverse().slice(0, 300).map(r => `
-    <tr>
-      <td>${escapeHtml(formatDisplayDate(r.date))}</td>
-      <td>${escapeHtml(r.item)}</td>
-      <td>${escapeHtml(r.lotNo)}</td>
-      <td class="num">${escapeHtml(r.qtyUsed)}</td>
-      <td>${escapeHtml(r.requester)}</td>
-      <td class="muted">${escapeHtml(r.timestamp)}</td>
-    </tr>
+    <tr><td>${escapeHtml(formatDisplayDate(r.date))}</td><td>${escapeHtml(r.item)}</td><td>${escapeHtml(r.lotNo)}</td>
+    <td class="num">${escapeHtml(r.qtyUsed)}</td><td>${escapeHtml(r.requester)}</td><td class="muted">${escapeHtml(r.timestamp)}</td></tr>
   `).join("");
 
-  el("usageLogs").innerHTML = `
-    <div class="tablewrap">
-      <table class="table">
-        <thead><tr><th>วันที่</th><th>รายการ</th><th>Lot No</th><th class="num">จำนวนที่เบิก</th><th>ผู้เบิก</th><th>Timestamp</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="6" class="muted">No usage logs</td></tr>`}</tbody>
-      </table>
-    </div>
-  `;
+  el("usageLogs").innerHTML = `<div class="tablewrap"><table class="table">
+    <thead><tr><th>วันที่</th><th>รายการ</th><th>Lot No</th><th class="num">จำนวนที่เบิก</th><th>ผู้เบิก</th><th>Timestamp</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6" class="muted">No usage logs</td></tr>`}</tbody>
+  </table></div>`;
 }
 
 /** Admin */
@@ -957,258 +729,26 @@ async function renderAdminTab() {
 
   setPanelActions([btnStatus, btnSelfTest, btnBackup, btnTrigger, btnAutoEmail, btnPdf]);
 
-  const staffHtml = await renderStaffAdmin();
-  const emailHtml = await renderEmailAdmin();
-
+  // Minimal admin page content
   setPanelBody(`
-    <div class="grid2">
-      <div>${staffHtml}</div>
-      <div>${emailHtml}</div>
-    </div>
-
     <div class="card inner">
-      <h3>Notes (Security Hardening)</h3>
-      <ul class="hint">
-        <li>ปัจจุบันใช้ StaffID/Password แบบง่าย (hash ในชีต) — แนะนำเพิ่ม session token/HMAC และ expiry</li>
-        <li>จำกัดการ Deploy Web App ให้ “Anyone” เฉพาะกรณีจำเป็น และควบคุมการเข้าถึงเครือข่าย/โดเมน</li>
-        <li>พิจารณาแยก Spreadsheet ต่อหน่วยงานและใช้บัญชีบริการ/Workspace controls</li>
-      </ul>
+      <h3>Admin Console</h3>
+      <div class="hint">ใช้ปุ่มด้านบน หรือใช้เมนู Admin (Mobile) เพื่อเรียก action sheet</div>
     </div>
   `);
-
-  wireStaffAdminEvents();
-  wireEmailAdminEvents();
 }
 
-async function renderStaffAdmin() {
-  let data = null;
-  await withLoading(async () => {
-    const res = await apiCall("loadStaff", authPayload({}), { timeoutMs: 20000, retries: 1 });
-    data = res.data;
-  });
-
-  const rows = (data.staff || []).map(s => `
-    <tr>
-      <td>${escapeHtml(s.staffId)}</td>
-      <td>${escapeHtml(s.name)}</td>
-      <td>${escapeHtml(s.role)}</td>
-      <td class="row gap">
-        <button class="btn btn-sm" data-staff-act="edit" data-staff-id="${escapeHtmlAttr(s.staffId)}">Edit</button>
-        <button class="btn btn-sm btn-danger" data-staff-act="del" data-staff-id="${escapeHtmlAttr(s.staffId)}">Delete</button>
-      </td>
-    </tr>
-  `).join("");
-
-  return `
-    <div class="card inner">
-      <h3>Staff (Admin)</h3>
-
-      <input type="hidden" id="stOriginalId" />
-      <div class="grid4">
-        <label><div class="label">StaffID</div><input id="stId" type="text" /></label>
-        <label><div class="label">ชื่อ</div><input id="stName" type="text" /></label>
-        <label><div class="label">Role</div>
-          <select id="stRole">
-            <option value="Admin">Admin</option>
-            <option value="RN">RN</option>
-            <option value="PN">PN</option>
-          </select>
-        </label>
-        <label><div class="label">Password (ใส่เพื่อเปลี่ยน)</div><input id="stPw" type="password" /></label>
-      </div>
-
-      <div class="row gap">
-        <button class="btn" id="stSave" type="button">Save (Add/Update)</button>
-        <button class="btn btn-secondary" id="stClear" type="button">Clear</button>
-      </div>
-
-      <div class="tablewrap">
-        <table class="table">
-          <thead><tr><th>StaffID</th><th>ชื่อ</th><th>Role</th><th>Action</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="4" class="muted">No staff</td></tr>`}</tbody>
-        </table>
-      </div>
-
-      <div class="hint">Password จะถูกเก็บเป็น SHA-256 hash ในชีต (ไม่ส่งกลับมาที่หน้าเว็บ)</div>
-    </div>
-  `;
-}
-
-function wireStaffAdminEvents() {
-  document.querySelectorAll("button[data-staff-act]").forEach(b => {
-    b.onclick = async () => {
-      const act = b.getAttribute("data-staff-act");
-      const sid = b.getAttribute("data-staff-id");
-      if (act === "edit") {
-        const res = await apiCall("loadStaff", authPayload({}), { timeoutMs: 20000, retries: 1 });
-        const rec = (res.data.staff || []).find(x => x.staffId === sid);
-        if (!rec) return;
-        el("stOriginalId").value = rec.staffId;
-        el("stId").value = rec.staffId;
-        el("stName").value = rec.name;
-        el("stRole").value = rec.role;
-        el("stPw").value = "";
-        showMsg("Edit Staff", "โหลดข้อมูลเข้าฟอร์มแล้ว (ใส่ Password เฉพาะเมื่อจะเปลี่ยน)");
-      }
-      if (act === "del") {
-        const ok = confirm(`Delete staff ${sid}?`);
-        if (!ok) return;
-        await withLoading(async () => {
-          await apiCall("deleteStaff", authPayload({ staffIdToDelete: sid }), { timeoutMs: 30000, retries: 0 });
-          await renderAdminTab();
-        });
-        showMsg("Deleted", "ลบ Staff เรียบร้อย");
-      }
-    };
-  });
-
-  el("stSave").onclick = async () => {
-    const originalStaffId = el("stOriginalId").value.trim();
-    const staffData = {
-      staffId: el("stId").value.trim(),
-      name: el("stName").value.trim(),
-      role: el("stRole").value,
-      password: el("stPw").value
-    };
-
-    if (!staffData.staffId || !staffData.name || !staffData.role) return showMsg("Staff", "กรุณากรอกข้อมูลให้ครบ");
-
-    await withLoading(async () => {
-      if (originalStaffId) {
-        await apiCall("updateStaff", authPayload({ staffData, originalStaffId }), { timeoutMs: 30000, retries: 0 });
-      } else {
-        if (!staffData.password) return showMsg("Staff", "การเพิ่ม Staff ใหม่ ต้องกำหนด Password");
-        await apiCall("addStaff", authPayload({ staffData }), { timeoutMs: 30000, retries: 0 });
-      }
-      await renderAdminTab();
-    });
-
-    showMsg("Saved", "บันทึก Staff เรียบร้อย");
-  };
-
-  el("stClear").onclick = () => {
-    el("stOriginalId").value = "";
-    el("stId").value = "";
-    el("stName").value = "";
-    el("stRole").value = "Admin";
-    el("stPw").value = "";
-  };
-}
-
-async function renderEmailAdmin() {
-  let data = null;
-  await withLoading(async () => {
-    const res = await apiCall("loadEmailRecipients", authPayload({}), { timeoutMs: 20000, retries: 1 });
-    data = res.data;
-  });
-
-  const emails = (data.emails || []).join("\n");
-
-  return `
-    <div class="card inner">
-      <h3>Email Recipients (Admin)</h3>
-      <textarea id="emList" rows="10" placeholder="one email per line">${escapeHtml(emails)}</textarea>
-      <div class="row gap">
-        <button class="btn" id="emSave" type="button">Save Recipients</button>
-      </div>
-      <div class="hint">ใช้สำหรับ autoCheckAndEmail() และ generatePDFandEmail()</div>
-    </div>
-  `;
-}
-
-function wireEmailAdminEvents() {
-  el("emSave").onclick = async () => {
-    const lines = el("emList").value.split("\n").map(x => x.trim()).filter(Boolean);
-    await withLoading(async () => {
-      await apiCall("updateEmailRecipients", authPayload({ emails: lines }), { timeoutMs: 30000, retries: 0 });
-    });
-    showMsg("Saved", "อัปเดตรายชื่อผู้รับอีเมลเรียบร้อย");
-  };
-}
-
-/** =========================
- * UI HELPERS
- * ========================= */
-function button(text, onClick) {
-  const b = document.createElement("button");
-  b.className = "btn btn-secondary";
-  b.textContent = text;
-  b.onclick = onClick;
-  return b;
-}
-
-async function withLoading(fn) {
-  setLoading(true);
-  try {
-    return await fn();
-  } catch (err) {
-    const rid = err && err.requestId ? `<div class="muted">requestId: ${escapeHtml(err.requestId)}</div>` : "";
-    showMsg("Error", `<div class="error">${escapeHtml(err.message || String(err))}</div>${rid}`);
-    throw err;
-  } finally {
-    setLoading(false);
-  }
-}
-
-function escapeHtmlAttr(s) {
-  return String(s || "")
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-// For querySelector attribute matching; minimal
-function cssEsc(s) {
-  return String(s || "").replace(/["\\]/g, "\\$&");
-}
-
-/** =========================
- * INIT
- * ========================= */
-function wireGlobalNavHandlers_() {
-  // Delegated clicks for bottom nav + sheet buttons
-  document.addEventListener("click", (ev) => {
-    const tabBtn = ev.target.closest("[data-go-tab]");
-    if (tabBtn) {
-      const tab = tabBtn.getAttribute("data-go-tab");
-      if (tab) navigateTo_(tab);
-      return;
-    }
-
-    const toggle = ev.target.closest("[data-toggle-sheet]");
-    if (toggle) {
-      toggleSheet_();
-      return;
-    }
-
-    const close = ev.target.closest("[data-close-sheet]");
-    if (close) {
-      closeSheet_();
-      return;
-    }
-
-    if (ev.target && ev.target.id === "sheetBackdrop") {
-      closeSheet_();
-      return;
-    }
-  });
-}
-
+/** INIT */
 function boot() {
-  el("msgOk").onclick = hideMsg;
+  hideMsg();
+  setLoading(false);
 
-  wireGlobalNavHandlers_();
+  el("msgOk").onclick = hideMsg;
 
   el("btnTogglePw").onclick = () => {
     const p = el("loginPassword");
-    if (p.type === "password") {
-      p.type = "text";
-      el("btnTogglePw").textContent = "Hide";
-    } else {
-      p.type = "password";
-      el("btnTogglePw").textContent = "Show";
-    }
+    if (p.type === "password") { p.type = "text"; el("btnTogglePw").textContent = "Hide"; }
+    else { p.type = "password"; el("btnTogglePw").textContent = "Show"; }
   };
 
   el("btnLogin").onclick = onLogin;
@@ -1216,7 +756,6 @@ function boot() {
 
   el("btnLogout").onclick = async () => {
     clearSession();
-    closeSheet_();
     setLoggedInUI(false);
     el("loginPassword").value = "";
     showMsg("Logout", "Logged out");
@@ -1227,22 +766,20 @@ function boot() {
   if (state.staffId && state.role) {
     setLoggedInUI(true);
     buildTabs();
-    withLoading(async () => {
-      await primeData();
-      await renderActiveTab();
-    });
+    withLoading(async () => { await primeData(); await renderActiveTab(); });
   } else {
     setLoggedInUI(false);
   }
 
-  // Quick API_BASE_URL check
   if (!API_BASE_URL || API_BASE_URL.includes("<PUT_WEB_APP_EXEC_URL_HERE>")) {
-    showMsg("Config required", `
-      <div class="warn">
-        กรุณาตั้งค่า <b>window.API_BASE_URL</b> ใน index.html ให้เป็น Apps Script Web App <b>/exec</b> URL
-      </div>
-    `);
+    showMsg("Config required", `<div class="warn">กรุณาตั้งค่า <b>window.API_BASE_URL</b> ใน config.js ให้เป็น Apps Script Web App <b>/exec</b> URL</div>`);
   }
 }
 
 document.addEventListener("DOMContentLoaded", boot);
+
+/** expose for index.html admin sheet helper */
+window.apiCall = apiCall;
+window.authPayload = authPayload;
+window.showMsg = showMsg;
+window.escapeHtml = escapeHtml;
